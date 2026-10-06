@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<title>Культурные места Западной Сибири</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"/>
+<link rel="stylesheet" href="/style.css"/>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Поиск -->
+<div id="search-bar">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input id="search-input" placeholder="Поиск культурного места…" autocomplete="off"/>
+  <button id="filter-btn" title="Фильтры"><i class="fa-solid fa-filter"></i></button>
+  <button id="legend-btn" title="Легенда"><i class="fa-solid fa-list"></i></button>
+</div>
+
+<!-- Фильтры -->
+<div id="filter-panel" class="hidden">
+  <h3>Фильтры</h3>
+  <label>Тип 1
+    <select id="f-type1">
+      <option value="">Все</option>
+      <option value="human">Созданные человеком</option>
+      <option value="nature">Природные</option>
+    </select>
+  </label>
+  <label>Тип 2
+    <select id="f-type2">
+      <option value="">Все</option>
+      <option value="museum">Музей</option>
+      <option value="monument">Памятник</option>
+      <option value="architecture">Архитектура</option>
+      <option value="theater">Театр</option>
+      <option value="temple">Храм</option>
+      <option value="lake">Озеро</option>
+      <option value="river">Река</option>
+      <option value="mountain">Гора</option>
+      <option value="reserve">Заповедник</option>
+      <option value="forest">Лес</option>
+      <option value="historic_nature">Историческая природа</option>
+    </select>
+  </label>
+  <label>Редакция
+    <select id="f-rarity">
+      <option value="">Любая</option>
+      <option value="common">Обычное</option>
+      <option value="rare">Редкое</option>
+      <option value="epic">Эпическое</option>
+      <option value="legendary">Легендарное</option>
+    </select>
+  </label>
+  <button id="apply-filter">Применить</button>
+</div>
+
+<!-- Легенда -->
+<div id="legend-panel" class="hidden">
+  <h3>Легенда</h3>
+  <div id="legend-items"></div>
+</div>
+
+<!-- Карточка метки -->
+<div id="popup-card" class="hidden">
+  <button id="close-card"><i class="fa-solid fa-xmark"></i></button>
+  <div id="card-icon"></div>
+  <h4 id="card-name"></h4>
+  <div id="card-meta"></div>
+  <p id="card-short"></p>
+  <button id="card-more">Подробнее <i class="fa-solid fa-arrow-right"></i></button>
+</div>
+
+<!-- Боковая панель -->
+<div id="side-panel" class="hidden">
+  <button id="close-panel"><i class="fa-solid fa-xmark"></i></button>
+  <h2 id="panel-name"></h2>
+  <div id="panel-meta"></div>
+  <img id="panel-photo" alt=""/>
+  <h3>Краткая история</h3>
+  <p id="panel-history"></p>
+  <h3>Источники</h3>
+  <ul id="panel-sources"></ul>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
