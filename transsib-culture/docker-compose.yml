@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: transsib_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: transsib
+      POSTGRES_PASSWORD: transsib
+      POSTGRES_DB: transsib
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transsib"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: ./backend
+    container_name: transsib_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://transsib:transsib@db:5432/transsib
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python -m app.init_data && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  pgdata:
