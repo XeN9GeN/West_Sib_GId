@@ -1,10 +1,10 @@
 from typing import List, Optional
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import func, select
+from sqlalchemy import func, select, cast
 from sqlalchemy.orm import Session
-from geoalchemy2.functions import ST_MakeEnvelope, ST_Within, ST_DWithin, ST_Distance
+from geoalchemy2 import Geometry
 
 from .database import SessionLocal
 from . import models, schemas
@@ -43,18 +43,16 @@ def culture_places(
 ):
     min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(","))
 
-    # порог size_priority в зависимости от зума (требование 4)
-    threshold = {
-        0: 3.0, 1: 3.0, 2: 3.0, 3: 2.5, 4: 2.5, 5: 2.0,
-        6: 2.0, 7: 1.5, 8: 1.5, 9: 1.0, 10: 1.0, 11: 0.8,
-    }.get(zoom, 0.5)
+    envelope = func.ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326)
+
+    # Ключевая правка: geography → geometry
+    geom_as_geom = cast(
+        models.CulturePlace.geom,
+        Geometry(geometry_type="POINT", srid=4326),
+    )
 
     stmt = select(models.CulturePlace).where(
-        models.CulturePlace.size_priority >= threshold,
-        ST_Within(
-            models.CulturePlace.geom,
-            ST_MakeEnvelope(min_lon, min_lat, max_lon, max_lat, 4326),
-        ),
+        func.ST_Within(geom_as_geom, envelope)
     )
     if type1:
         stmt = stmt.where(models.CulturePlace.type1 == type1)
@@ -107,8 +105,12 @@ def place_detail(place_id: int, db: Session = Depends(get_db)):
 # ---------- helpers ----------
 
 def _to_out(r: models.CulturePlace, db: Session) -> schemas.CulturePlaceOut:
+    geom_as_geom = cast(
+        r.geom,
+        Geometry(geometry_type="POINT", srid=4326),
+    )
     lon, lat = db.execute(
-        select(func.ST_X(r.geom), func.ST_Y(r.geom))
+        select(func.ST_X(geom_as_geom), func.ST_Y(geom_as_geom))
     ).first()
     return schemas.CulturePlaceOut(
         id=r.id, name=r.name, type1=r.type1.value, type2=r.type2.value,

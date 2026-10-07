@@ -29,6 +29,7 @@ services:
       - "8000:8000"
     volumes:
       - ./frontend:/app/frontend
+      - ./backend/app:/app/app
     command: >
       sh -c "python -m app.init_data && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
