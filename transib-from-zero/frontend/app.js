@@ -28,6 +28,13 @@ const type2Labels = {
 function initLegend() {
     const type1Container = document.getElementById('type1-list');
     const type2Container = document.getElementById('type2-list');
+    
+    const railwayContainer = document.getElementById('railway-list');
+    const railwayDiv = document.createElement('div');
+    railwayDiv.className = 'legend-item';
+    railwayDiv.innerHTML = `<span>Транссиб</span><span class="flag on" id="flag-railway">+</span>`;
+    railwayDiv.onclick = toggleRailway;
+    railwayContainer.appendChild(railwayDiv);
 
     Object.keys(type1Labels).forEach(key => {
         const div = document.createElement('div');
@@ -152,6 +159,47 @@ async function loadPlaces() {
     renderMarkers();
 }
 
+
+let railwayLayer = null;
+let showRailway = true;
+
+async function loadRailway() {
+    const response = await fetch('/api/railway');
+    const data = await response.json();
+    
+    if (data.geometry) {
+        railwayLayer = L.geoJSON(data.geometry, {
+            style: {
+                color: '#2c3e50',
+                weight: 4,
+                dashArray: '10, 10',
+                opacity: 0.8
+            }
+        });
+        
+        if (showRailway) {
+            railwayLayer.addTo(map);
+        }
+    }
+}
+
+function toggleRailway() {
+    showRailway = !showRailway;
+    const flagEl = document.getElementById('flag-railway');
+    
+    if (showRailway) {
+        flagEl.textContent = '+';
+        flagEl.className = 'flag on';
+        if (railwayLayer) railwayLayer.addTo(map);
+    } else {
+        flagEl.textContent = '-';
+        flagEl.className = 'flag off';
+        if (railwayLayer) map.removeLayer(railwayLayer);
+    }
+}
+
+
+
 const searchInput = document.getElementById('search-input');
 
 searchInput.addEventListener('input', (e) => {
@@ -198,6 +246,7 @@ document.getElementById('legend-btn').onclick = () => {
     document.getElementById('legend-panel').classList.toggle('active');
 };
 
+loadRailway();
 loadPlaces();
 map.on('moveend', loadPlaces);
 initLegend();
