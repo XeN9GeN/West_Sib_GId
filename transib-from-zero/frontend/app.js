@@ -70,7 +70,6 @@ function toggleFilter(typeCategory, typeValue, flagId) {
     renderMarkers();
 }
 
-// Изм
 function getPopupContent(p) {
     const iconHtml = `<div class="popup-icon-box" style="color:${p.marker.color}">
         <i class="fa-solid ${p.marker.icon}"></i>
@@ -105,8 +104,11 @@ function getPopupContent(p) {
     </div>`;
 }
 
+const markerRegistry = {}; 
 function renderMarkers() {
     markerLayer.clearLayers();
+
+    for (let key in markerRegistry) delete markerRegistry[key]; 
 
     allPlaces.forEach(p => {
         const isType1Hidden = hiddenTypes.type1.has(p.type1);
@@ -136,18 +138,40 @@ function renderMarkers() {
             });
             
             const marker = L.marker([p.lat, p.lon], { icon: icon }).addTo(markerLayer);
-            marker.placeId = p.id; // Изм
-            
-            // Изм
+            marker.placeId = p.id;
+    
             marker.bindPopup(getPopupContent(p), {
                 className: 'custom-popup',
                 maxWidth: 350,
                 minWidth: 350,
                 autoPanPadding: [50, 50]
             });
+
+            markerRegistry[p.id] = marker;
         }
     });
+    renderSidebar();
 }
+function renderSidebar() {
+    const listContainer = document.getElementById('places-list');
+    listContainer.innerHTML = '';
+
+       allPlaces.forEach(place => {
+        const marker = markerRegistry[place.id];
+        if (!marker) return;
+
+        const li = document.createElement('li');
+        li.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${place.marker.color}; border-radius:50%; margin-right:8px;"></span> ${place.name}`;
+        
+        li.onclick = () => {
+            map.flyTo([place.lat, place.lon], 15, { duration: 1 });
+            map.once('moveend', () => marker.openPopup());
+        };
+        
+        listContainer.appendChild(li);
+    });
+}
+
 
 async function loadPlaces() {
     const bounds = map.getBounds();
@@ -159,10 +183,8 @@ async function loadPlaces() {
     renderMarkers();
 }
 
-
 let railwayLayer = null;
 let showRailway = true;
-
 async function loadRailway() {
     const response = await fetch('/api/railway');
     const data = await response.json();
@@ -212,7 +234,6 @@ searchInput.addEventListener('input', (e) => {
     renderMarkers();
 });
 
-// Изм
 searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         if (searchQuery === "") return;
