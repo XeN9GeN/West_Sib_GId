@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: transsib
+      POSTGRES_PASSWORD: transsib
+      POSTGRES_DB: transsib
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transsib -d transsib"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://transsib:transsib@db:5432/transsib
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
