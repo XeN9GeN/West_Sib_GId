@@ -10,6 +10,26 @@
             html, body { margin: 0; height: 100%; }
             #map { width: 100%; height: 100vh; background: #333; }
 
+            #search-input {
+                position: absolute;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 1000;
+                width: 300px;
+                padding: 10px 15px;
+                border: 2px solid rgba(0,0,0,0.2);
+                border-radius: 4px;
+                font-size: 14px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+                outline: none;
+            }
+
+            #search-input:focus {
+                border-color: #66afe9;
+            }
+
+            
             #legend-btn {
                 position: absolute;
                 top: 20px;
@@ -64,7 +84,9 @@
     <body>
         <div id="map"></div>
 
+        <input type="text" id="search-input" placeholder="Поиск по названию..." />
         <button id="legend-btn">Легенда</button>
+
         <div id="legend-panel">
             <div class="legend-section">
                 <h4>Тип 1 (Nature/Artifical)</h4>

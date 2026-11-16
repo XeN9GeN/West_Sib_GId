@@ -8,6 +8,9 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const markerLayer = L.layerGroup().addTo(map);
 
 let allPlaces = [];//all downloaded place
+let searchQuery = "";
+let highlightedPlaceId = null;
+
 const hiddenTypes = {
     type1: new Set(),
     type2: new Set()
@@ -20,6 +23,7 @@ const type2Labels = {
     river: "Реки", reserve: "Заповедники", forest: "Леса",
     historic_nature: "Истор. природа"
 };
+
 
 
 function initLegend(){
@@ -72,13 +76,31 @@ function renderMarkers() {
         const isType1Hidden = hiddenTypes.type1.has(p.type1);
         const isType2Hidden = hiddenTypes.type2.has(p.type2);
 
+        const matchesSearch = p.name.toLowerCase().includes(searchQuery);
+
+
         //Если оба типа включены - рисуем маркер
-        if (!isType1Hidden && !isType2Hidden) {
+       if (!isType1Hidden && !isType2Hidden && matchesSearch) {
+            
+            const isHighlighted = (p.id === highlightedPlaceId);
+            
+            const size = isHighlighted ? 36 : 20;
+            const anchor = size / 2;
+            const border = isHighlighted ? '3px solid #f1c40f' : '2px solid white';
+
             const icon = L.divIcon({
-                html: `<div style="background:${p.marker.color}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; box-shadow: 0 2px 5px rgba(0,0,0,0.5);"></div>`,
+                html: `<div style="
+                    background:${p.marker.color}; 
+                    width: ${size}px; 
+                    height: ${size}px; 
+                    border-radius: 50%; 
+                    border: ${border}; 
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+                    transition: all 0.3s ease;
+                "></div>`,
                 className: '', 
-                iconSize: [20, 20],
-                iconAnchor: [10, 10]
+                iconSize: [size, size],
+                iconAnchor: [anchor, anchor]
             });
             
             L.marker([p.lat, p.lon], { icon: icon }).bindPopup(`<b>${p.name}</b>`).addTo(markerLayer);
@@ -96,10 +118,60 @@ async function loadPlaces(){
     const response = await fetch(`/api/culture_places?bbox=${bbox}`);//формирует шттп запрос и передаёт сетевому стеку ОС, оно отправляет в loclhost:8000
     allPlaces  = await response.json();
 
-    markerLayer.clearLayers();
-
-   renderMarkers();
+    renderMarkers();
 }
+
+
+
+
+const searchInput = document.getElementById('search-input');
+
+searchInput.addEventListener('input', (e) => {
+    searchQuery = e.target.value.trim().toLowerCase();
+    
+    if (searchQuery === "") {
+        highlightedPlaceId = null;
+    }
+    
+    renderMarkers();
+});
+
+searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        if (searchQuery === "") return;
+
+        const foundPlace = allPlaces.find(p => 
+            p.name.toLowerCase().includes(searchQuery)
+        );
+
+        if (foundPlace) {
+            highlightedPlaceId = foundPlace.id;
+            
+            renderMarkers();
+
+            map.flyTo([foundPlace.lat, foundPlace.lon], 14, {
+                duration: 1.5
+            });
+
+            map.once('moveend', () => {
+                markerLayer.eachLayer(layer => {
+                    const latlng = layer.getLatLng();
+                    if (latlng.lat === foundPlace.lat && latlng.lng === foundPlace.lon) {
+                        layer.openPopup();
+                    }
+                });
+            });
+        } else {
+            alert("Объект с таким названием не найден на текущей карте.");
+        }
+    }
+});
+
+
+document.getElementById('search-input').addEventListener('input', (e) => {
+    searchQuery = e.target.value.trim().toLowerCase();
+    renderMarkers();
+});
 
 document.getElementById('legend-btn').onclick = () => {
     document.getElementById('legend-panel').classList.toggle('active');
