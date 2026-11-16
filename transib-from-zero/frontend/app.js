@@ -4,10 +4,9 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap'
 }).addTo(map);
 
-
 const markerLayer = L.layerGroup().addTo(map);
 
-let allPlaces = [];//all downloaded place
+let allPlaces = [];
 let searchQuery = "";
 let highlightedPlaceId = null;
 
@@ -16,7 +15,7 @@ const hiddenTypes = {
     type2: new Set()
 };
 
-const type1Labels = {human: "Искусственный", nature: "Природные" };
+const type1Labels = { human: "Искусственный", nature: "Природные" };
 const type2Labels = {
     museum: "Музеи", monument: "Памятники", architecture: "Архитектура",
     theater: "Театры", temple: "Храмы", lake: "Озера",
@@ -26,15 +25,14 @@ const type2Labels = {
 
 
 
-function initLegend(){
-    const type1Container = document.getElementById('type1-list');//<ul id="type1-list"></ul>
+function initLegend() {
+    const type1Container = document.getElementById('type1-list');
     const type2Container = document.getElementById('type2-list');
 
     Object.keys(type1Labels).forEach(key => {
         const div = document.createElement('div');
         div.className = 'legend-item';
         div.innerHTML = `<span>${type1Labels[key]}</span><span class="flag on" id="flag-t1-${key}">+</span>`;
-        
         div.onclick = () => toggleFilter('type1', key, `flag-t1-${key}`);
         type1Container.appendChild(div);
     });
@@ -43,12 +41,10 @@ function initLegend(){
         const div = document.createElement('div');
         div.className = 'legend-item';
         div.innerHTML = `<span>${type2Labels[key]}</span><span class="flag on" id="flag-t2-${key}">+</span>`;
-        
         div.onclick = () => toggleFilter('type2', key, `flag-t2-${key}`);
         type2Container.appendChild(div);
     });
 }
-
 
 function toggleFilter(typeCategory, typeValue, flagId) {
     const set = hiddenTypes[typeCategory];
@@ -67,21 +63,50 @@ function toggleFilter(typeCategory, typeValue, flagId) {
     renderMarkers();
 }
 
+// Изм
+function getPopupContent(p) {
+    const iconHtml = `<div class="popup-icon-box" style="color:${p.marker.color}">
+        <i class="fa-solid ${p.marker.icon}"></i>
+    </div>`;
+
+    const imageHtml = `<div class="popup-image-box">
+        ${p.photo_url ? `<img src="${p.photo_url}" alt="${p.name}">` : 'Нет фото'}
+    </div>`;
+
+    const dateStr = p.creation_date ? ` • Год: ${p.creation_date}` : '';
+    const fieldsHtml = `<div class="popup-fields">
+        <h3>${p.name}</h3>
+        <div><b>Тип:</b> ${type1Labels[p.type1]} • ${type2Labels[p.type2]}</div>
+        <div><b>Координаты:</b> ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${dateStr}</div>
+    </div>`;
+
+    const descHtml = `<div class="popup-description">
+        ${p.history || p.short_description || 'Описание отсутствует.'}
+    </div>`;
+
+    let sourcesHtml = '';
+    if (p.sources && p.sources.length > 0) {
+        const links = p.sources.map(url => `<a href="${url}" target="_blank">${url}</a>`).join('');
+        sourcesHtml = `<div class="popup-sources"><b>Источники:</b><br>${links}</div>`;
+    }
+
+    return `<div class="popup-card">
+        <div class="popup-header">${iconHtml}${imageHtml}</div>
+        ${fieldsHtml}
+        ${descHtml}
+        ${sourcesHtml}
+    </div>`;
+}
 
 function renderMarkers() {
     markerLayer.clearLayers();
 
     allPlaces.forEach(p => {
-        //скрыт ли type1 и type2
         const isType1Hidden = hiddenTypes.type1.has(p.type1);
         const isType2Hidden = hiddenTypes.type2.has(p.type2);
-
         const matchesSearch = p.name.toLowerCase().includes(searchQuery);
 
-
-        //Если оба типа включены - рисуем маркер
-       if (!isType1Hidden && !isType2Hidden && matchesSearch) {
-            
+        if (!isType1Hidden && !isType2Hidden && matchesSearch) {
             const isHighlighted = (p.id === highlightedPlaceId);
             
             const size = isHighlighted ? 36 : 20;
@@ -103,26 +128,29 @@ function renderMarkers() {
                 iconAnchor: [anchor, anchor]
             });
             
-            L.marker([p.lat, p.lon], { icon: icon }).bindPopup(`<b>${p.name}</b>`).addTo(markerLayer);
+            const marker = L.marker([p.lat, p.lon], { icon: icon }).addTo(markerLayer);
+            marker.placeId = p.id; // Изм
+            
+            // Изм
+            marker.bindPopup(getPopupContent(p), {
+                className: 'custom-popup',
+                maxWidth: 350,
+                minWidth: 350,
+                autoPanPadding: [50, 50]
+            });
         }
     });
 }
 
-
-
-async function loadPlaces(){
+async function loadPlaces() {
     const bounds = map.getBounds();
+    const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
 
-    const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;//взять границы карты на экране
-
-    const response = await fetch(`/api/culture_places?bbox=${bbox}`);//формирует шттп запрос и передаёт сетевому стеку ОС, оно отправляет в loclhost:8000
-    allPlaces  = await response.json();
+    const response = await fetch(`/api/culture_places?bbox=${bbox}`);
+    allPlaces = await response.json();
 
     renderMarkers();
 }
-
-
-
 
 const searchInput = document.getElementById('search-input');
 
@@ -136,6 +164,7 @@ searchInput.addEventListener('input', (e) => {
     renderMarkers();
 });
 
+// Изм
 searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
         if (searchQuery === "") return;
@@ -146,7 +175,6 @@ searchInput.addEventListener('keydown', (e) => {
 
         if (foundPlace) {
             highlightedPlaceId = foundPlace.id;
-            
             renderMarkers();
 
             map.flyTo([foundPlace.lat, foundPlace.lon], 14, {
@@ -155,8 +183,7 @@ searchInput.addEventListener('keydown', (e) => {
 
             map.once('moveend', () => {
                 markerLayer.eachLayer(layer => {
-                    const latlng = layer.getLatLng();
-                    if (latlng.lat === foundPlace.lat && latlng.lng === foundPlace.lon) {
+                    if (layer.placeId === foundPlace.id) {
                         layer.openPopup();
                     }
                 });
@@ -167,17 +194,10 @@ searchInput.addEventListener('keydown', (e) => {
     }
 });
 
-
-document.getElementById('search-input').addEventListener('input', (e) => {
-    searchQuery = e.target.value.trim().toLowerCase();
-    renderMarkers();
-});
-
 document.getElementById('legend-btn').onclick = () => {
     document.getElementById('legend-panel').classList.toggle('active');
 };
 
-
 loadPlaces();
-map.on('moveend',loadPlaces);
+map.on('moveend', loadPlaces);
 initLegend();
