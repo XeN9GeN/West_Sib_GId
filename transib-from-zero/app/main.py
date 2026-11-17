@@ -4,6 +4,7 @@ from sqlalchemy import func, select, cast
 from sqlalchemy.orm import Session
 from geoalchemy2 import Geometry
 from fastapi.middleware.cors import CORSMiddleware
+import json
 
 from .database import SessionLocal, engine, Base
 from . import models, schemas
@@ -63,6 +64,15 @@ def culture_places(
         ))
         
     return result
+
+@app.get("/api/railway")
+def get_railway(db: Session = Depends(get_db)):
+    stmt = select(func.ST_AsGeoJSON(models.Railway.geom)).limit(1)
+    row = db.execute(stmt).first()
+    
+    if row and row[0]:
+        return {"geometry": json.loads(row[0])}
+    return {"geometry": None}
 
 
 from fastapi.staticfiles import StaticFiles
