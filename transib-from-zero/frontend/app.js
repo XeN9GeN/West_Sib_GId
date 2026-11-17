@@ -4,7 +4,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap'
 }).addTo(map);
 
-const markerLayer = L.layerGroup().addTo(map);
+const markerLayer = L.markerClusterGroup().addTo(map);
 
 let allPlaces = [];
 let searchQuery = "";
@@ -156,7 +156,7 @@ function renderSidebar() {
     const listContainer = document.getElementById('places-list');
     listContainer.innerHTML = '';
 
-       allPlaces.forEach(place => {
+    allPlaces.forEach(place => {
         const marker = markerRegistry[place.id];
         if (!marker) return;
 
