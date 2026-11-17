@@ -40,7 +40,12 @@ class TrainCoord(Base):
     geom = Column(Geography(geometry_type="POINT", srid=4326), nullable=False)
     search_radius_m = Column(Float, nullable=False, default=15000)
 
-class Railway(Base):
+class RawRailwayPoint(Base):
+    __tablename__ = "raw_railway_points"
+    id = Column(Integer, primary_key = True)
+    geom = Column(Geometry(geometry_type="Point", srid=4326), nullable = False)
+
+class Railway(Base):#ready lines
     __tablename__ = "railway"
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)

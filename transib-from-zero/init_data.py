@@ -1,17 +1,11 @@
 import datetime as dt
+import re
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import text
 from app.database import engine, SessionLocal, Base
+import xml.etree.ElementTree as ET
+from sqlalchemy import text
 from app import models
-
-RAILWAY_WKT = (
-    "LINESTRING("
-    "73.3242 54.9885, 73.90 55.02, 74.5833 55.05, 75.10 55.12, "
-    "75.9667 55.2167, 76.60 55.25, 77.30 55.28, 78.35 55.35, "
-    "79.10 55.30, 80.2833 55.20, 81.10 55.10, 82.00 55.05, "
-    "82.9357 55.0084"
-    ")"
-)
 
 TRAIN_COORDS = [
     ("Омск",              73.3242, 54.9885, 18000),
@@ -74,6 +68,66 @@ PLACES = [
 
 Base.metadata.create_all(bind=engine)
 
+
+def load_railway_points(db):
+    file_path = "row_trailway_points.xml"
+
+    # Ищет LAT="значение" и LON="значение" в любом месте строки
+    lat_pattern = re.compile(r'LAT="([\d\.]+)"')
+    lon_pattern = re.compile(r'LON="([\d\.]+)"')
+
+    try:
+        with open(file_path, mode='r', encoding='utf-8') as f:
+            batch = []
+            batch_size = 10000
+            
+            for line in f:
+                lat_match = lat_pattern.search(line)
+                lon_match = lon_pattern.search(line)
+                
+                if lat_match and lon_match:
+                    lat = float(lat_match.group(1))
+                    lon = float(lon_match.group(1))
+                    
+                    batch.append(models.RawRailwayPoint(
+                        geom=WKTElement(f"POINT({lon} {lat})", srid=4326)
+                    ))
+                
+                if len(batch) >= batch_size:
+                    db.bulk_save_objects(batch)
+                    db.commit()
+                    batch = []
+        
+            if batch:
+                db.bulk_save_objects(batch)
+                db.commit()
+                
+        print("Точки ЖД успешно загружены из XML-файла.")
+    except FileNotFoundError:
+        print(f"Файл {file_path} не найден")
+
+
+def create_railway_line_from_points(db):
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_raw_railway_geom ON raw_railway_points USING GIST (geom);"))
+    db.commit()
+
+    # 1* = 111km;  0.01 = 1.1km; 0.0001 = 11m
+    query = text("""
+        SELECT ST_Simplify(ST_MakeLine(geom ORDER BY id), 0.0001) AS simplified_line 
+        FROM raw_railway_points;
+    """)# должна быть одна линия MAKELine в SELECT COUNT(*) FROM railway;
+    result = db.execute(query).scalar()
+
+    if result:
+        db.query(models.Railway).delete()
+        db.add(models.Railway(name="Транссиб (реальный маршрут)", geom=result))
+        db.commit()
+        print("Линия ЖД успешно сгенерирована и сохранена для карты.")
+    else:
+        print("Не удалось сгенерировать линию: нет точек в БД.")
+
+
+
 def main():
     db = SessionLocal()
     try:
@@ -104,8 +158,17 @@ def main():
                 db.add(place)
             db.commit()
             print("База успешно заполнена 50 местами!")
+
+        if db.query(models.RawRailwayPoint).count() == 0:
+            load_railway_points(db)
+        if db.query(models.RawRailwayPoint).count() > 0 and db.query(models.Railway).count() == 0:
+            create_railway_line_from_points(db)
+
     finally:
         db.close()
+
+
+
 
 if __name__ == "__main__":
     main()
