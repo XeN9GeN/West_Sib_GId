@@ -5,11 +5,58 @@
         <title>TranSibMap</title>
 
         <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+        <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
         
         <style>
             html, body { margin: 0; height: 100%; }
             #map { width: 100%; height: 100vh; background: #333; }
 
+            #sidebar {
+                position: absolute;
+                top: 0; left: 0;
+                width: 300px; height: 100vh;
+                background: white;
+                z-index: 1000;
+                box-shadow: 2px 0 5px rgba(0,0,0,0.3);
+                display: flex;
+                flex-direction: column;
+                padding-top: 70px;
+            }
+            #places-list {
+                list-style: none; padding: 0; margin: 0;
+                overflow-y: auto; flex-grow: 1;
+            }
+            #places-list li {
+                padding: 10px 15px;
+                border-bottom: 1px solid #eee;
+                cursor: pointer;
+                font-size: 14px;
+            }
+            #places-list li:hover { background: #f0f8ff; }
+
+
+            
+            #search-input {
+                position: absolute;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 1000;
+                width: 300px;
+                padding: 10px 15px;
+                border: 2px solid rgba(0,0,0,0.2);
+                border-radius: 4px;
+                font-size: 14px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+                outline: none;
+            }
+
+            #search-input:focus {
+                border-color: #66afe9;
+            }
+            
             #legend-btn {
                 position: absolute;
                 top: 20px;
@@ -58,16 +105,109 @@
             .flag { font-weight: bold; font-family: monospace; font-size: 16px; }
             .flag.on { color: green; }
             .flag.off { color: red; }
+
+            /* Стили для попапа Leaflet */
+            .custom-popup .leaflet-popup-content-wrapper {
+                padding: 0;
+                border-radius: 8px;
+                overflow: hidden;
+                box-shadow: 0 5px 15px rgba(0,0,0,0.4);
+            }
+
+            .custom-popup .leaflet-popup-content {
+                margin: 0;
+                width: 350px !important;
+            }
+
+            .popup-card {
+                display: flex;
+                flex-direction: column;
+                background: white;
+            }
+
+            .popup-header {
+                display: flex;
+                gap: 10px;
+                padding: 15px 15px 0 15px;
+            }
+
+            .popup-icon-box {
+                width: 70px; height: 70px;
+                background: #f0f0f0;
+                border-radius: 8px;
+                display: flex; align-items: center; justify-content: center;
+                font-size: 32px;
+                flex-shrink: 0;
+            }
+
+            .popup-image-box {
+                flex-grow: 1;
+                height: 70px;
+                background: #e0e0e0;
+                border-radius: 8px;
+                overflow: hidden;
+                display: flex; align-items: center; justify-content: center;
+                color: #999; font-size: 12px;
+            }
+
+            .popup-image-box img {
+                width: 100%; height: 100%; object-fit: cover;
+            }
+
+            .popup-fields {
+                padding: 10px 15px;
+                font-size: 13px;
+                color: #333;
+            }
+
+            .popup-fields h3 {
+                margin: 0 0 5px 0;
+                font-size: 18px;
+                color: #111;
+            }
+
+            .popup-description {
+                padding: 10px 15px;
+                max-height: 120px;
+                overflow-y: auto;
+                font-size: 13px;
+                line-height: 1.4;
+                color: #444;
+                border-top: 1px solid #eee;
+                border-bottom: 1px solid #eee;
+                background: #fafafa;
+            }
+
+            .popup-sources {
+                padding: 10px 15px 15px 15px;
+                font-size: 12px;
+            }
+
+            .popup-sources a {
+                color: #2980b9;
+                text-decoration: none;
+                margin-right: 10px;
+                word-break: break-all;
+            }
         </style>
     </head>
     
     <body>
         <div id="map"></div>
+        <div id="sidebar">
+            <ul id="places-list"></ul>
+        </div>
 
+        <input type="text" id="search-input" placeholder="Поиск по названию..." />
         <button id="legend-btn">Легенда</button>
+
         <div id="legend-panel">
             <div class="legend-section">
-                <h4>Тип 1 (Nature/Artifical)</h4>
+                <h4>Инфраструктура</h4>
+                <div id="railway-list"></div>
+            </div>
+            <div class="legend-section">
+                <h4>Тип 1 (Nature/Artificial)</h4>
                 <div id="type1-list"></div>
             </div>
             <div class="legend-section">
@@ -77,6 +217,7 @@
         </div>
 
         <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
         <script src="app.js"></script>
     </body>
 </html>

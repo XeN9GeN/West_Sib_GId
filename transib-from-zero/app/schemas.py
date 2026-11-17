@@ -17,6 +17,7 @@ class CulturePlaceOut(BaseModel):
     size_priority: float
     short_description: str
     history: Optional[str] = None
+    photo_url: Optional[str] = None
     sources: Optional[List[str]] = None
     creation_date: Optional[date] = None
     marker: MarkerStyle
