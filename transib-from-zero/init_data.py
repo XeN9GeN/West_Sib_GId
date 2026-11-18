@@ -1,17 +1,12 @@
 import datetime as dt
+import re
+from pathlib import Path
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import text
 from app.database import engine, SessionLocal, Base
+import xml.etree.ElementTree as ET
+from sqlalchemy import text
 from app import models
-
-RAILWAY_WKT = (
-    "LINESTRING("
-    "73.3242 54.9885, 73.90 55.02, 74.5833 55.05, 75.10 55.12, "
-    "75.9667 55.2167, 76.60 55.25, 77.30 55.28, 78.35 55.35, "
-    "79.10 55.30, 80.2833 55.20, 81.10 55.10, 82.00 55.05, "
-    "82.9357 55.0084"
-    ")"
-)
 
 TRAIN_COORDS = [
     ("Омск",              73.3242, 54.9885, 18000),
@@ -74,10 +69,136 @@ PLACES = [
 
 Base.metadata.create_all(bind=engine)
 
+
+def load_railway_points(db):
+    file_path = Path(__file__).with_name("row_trailway_points.xml")
+
+    lat_pattern = re.compile(r'LAT="([\d\.]+)"')
+    lon_pattern = re.compile(r'LON="([\d\.]+)"')
+    track_pattern = re.compile(r'TRACK="(\d+),[^"]+"')
+    km_pattern = re.compile(r'KM="(\d+)"')
+    measure_pattern = re.compile(r'M="([\d\.]+)"')
+
+    with file_path.open(mode='r', encoding='utf-8') as f:
+        batch = []
+        batch_size = 10000
+        point_count = 0
+
+        for line_number, line in enumerate(f, start=1):
+            lat_match = lat_pattern.search(line)
+            lon_match = lon_pattern.search(line)
+
+            if lat_match and lon_match:
+                track_match = track_pattern.search(line)
+                km_match = km_pattern.search(line)
+                measure_match = measure_pattern.search(line)
+                if not track_match or not km_match or not measure_match:
+                    raise ValueError(
+                        f"В XML не хватает данных пути для точки в строке {line_number}"
+                    )
+
+                lat = float(lat_match.group(1))
+                lon = float(lon_match.group(1))
+                batch.append(models.RawRailwayPoint(
+                    geom=WKTElement(f"POINT({lon} {lat})", srid=4326),
+                    track_id=track_match.group(1),
+                    km=int(km_match.group(1)),
+                    measure=float(measure_match.group(1)),
+                ))
+                point_count += 1
+
+            if len(batch) >= batch_size:
+                db.bulk_save_objects(batch)
+                db.commit()
+                batch = []
+
+        if batch:
+            db.bulk_save_objects(batch)
+            db.commit()
+
+    print(f"Точки ЖД успешно загружены из XML-файла: {point_count}.")
+
+
+def create_railway_line_from_points(db):
+    db.execute(text("CREATE INDEX IF NOT EXISTS idx_raw_railway_geom ON raw_railway_points USING GIST (geom);"))
+    db.commit()
+
+    query = text("""
+        WITH track_lines AS (
+            SELECT track_id, ST_MakeLine(geom ORDER BY km, measure) AS geom
+            FROM raw_railway_points
+            GROUP BY track_id
+        )
+        SELECT ST_Multi(ST_Collect(geom))
+        FROM track_lines;
+    """)
+    result = db.execute(query).scalar()
+
+    if result:
+        db.query(models.Railway).delete()
+        db.add(models.Railway(name="Транссиб (реальный маршрут)", geom=result))
+        db.commit()
+        print("Пути ЖД успешно сгенерированы и сохранены для карты.")
+    else:
+        print("Не удалось сгенерировать линию: нет точек в БД.")
+
+
+def create_railway_detail_levels(db):
+    # Geometry is stored in EPSG:4326, so simplification tolerances are in degrees.
+    levels = [
+        (4, 0.06),
+        (6, 0.015),
+        (8, 0.004),
+        (10, 0.001),
+        (12, 0.00025),
+        (14, 0.00006),
+        (16, 0.000015),
+        (18, 0.000004),
+    ]
+
+    db.query(models.RailwayDetail).delete()
+    db.flush()
+
+    for zoom_level, tolerance in levels:
+        db.execute(
+            text("""
+                INSERT INTO railway_detail (zoom_level, geom)
+                SELECT :zoom_level,
+                       ST_Simplify(geom, :tolerance)
+                FROM railway
+                ORDER BY id
+                LIMIT 1
+            """),
+            {"zoom_level": zoom_level, "tolerance": tolerance},
+        )
+
+    db.commit()
+    print("Уровни детализации ЖД линии успешно сохранены.")
+
+
+
 def main():
     db = SessionLocal()
     try:
         db.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
+        db.commit()
+
+        db.execute(text("""
+            ALTER TABLE raw_railway_points
+                ADD COLUMN IF NOT EXISTS track_id VARCHAR(32),
+                ADD COLUMN IF NOT EXISTS km INTEGER,
+                ADD COLUMN IF NOT EXISTS measure DOUBLE PRECISION
+        """))
+        db.execute(text("""
+            ALTER TABLE railway
+                ALTER COLUMN geom TYPE geometry(MultiLineString, 4326)
+                USING ST_Multi(geom)
+        """))
+        db.execute(text("""
+            ALTER TABLE railway_detail
+                ALTER COLUMN geom TYPE geometry(MultiLineString, 4326)
+                USING ST_Multi(geom)
+        """))
         db.commit()
 
         if db.query(models.TrainCoord).count() == 0:
@@ -87,10 +208,6 @@ def main():
                     geom=WKTElement(f"POINT({lon} {lat})", srid=4326),
                     search_radius_m=radius
                 ))
-            db.commit()
-
-        if db.query(models.Railway).count() == 0:
-            db.add(models.Railway(name="Транссиб", geom=WKTElement(RAILWAY_WKT, srid=4326)))
             db.commit()
 
         if db.query(models.CulturePlace).count() == 0:
@@ -104,8 +221,32 @@ def main():
                 db.add(place)
             db.commit()
             print("База успешно заполнена 50 местами!")
+
+        points_need_reload = db.query(models.RawRailwayPoint).filter(
+            (models.RawRailwayPoint.track_id.is_(None))
+            | (models.RawRailwayPoint.km.is_(None))
+            | (models.RawRailwayPoint.measure.is_(None))
+        ).first() is not None
+        if db.query(models.RawRailwayPoint).count() == 0 or points_need_reload:
+            file_path = Path(__file__).with_name("row_trailway_points.xml")
+            if not file_path.is_file():
+                raise FileNotFoundError(f"Файл {file_path} не найден")
+            db.query(models.RawRailwayPoint).delete(synchronize_session=False)
+            db.commit()
+            load_railway_points(db)
+            points_need_reload = True
+
+        if points_need_reload or db.query(models.Railway).count() == 0:
+            create_railway_line_from_points(db)
+
+        if points_need_reload or db.query(models.RailwayDetail).count() == 0:
+            create_railway_detail_levels(db)
+
     finally:
         db.close()
+
+
+
 
 if __name__ == "__main__":
     main()
