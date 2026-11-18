@@ -185,12 +185,33 @@ async function loadPlaces() {
 
 let railwayLayer = null;
 let showRailway = true;
+let railwayDetailLevel = null;
+const railwayGeometryCache = new Map();
+
+function getRailwayDetailLevel(zoom) {
+    return Math.max(4, Math.min(18, Math.floor(zoom / 2) * 2));
+}
+
 async function loadRailway() {
-    const response = await fetch('/api/railway');
-    const data = await response.json();
-    
-    if (data.geometry) {
-        railwayLayer = L.geoJSON(data.geometry, {
+    const detailLevel = getRailwayDetailLevel(map.getZoom());
+    if (detailLevel === railwayDetailLevel) return;
+
+    let geometry = railwayGeometryCache.get(detailLevel);
+    if (!geometry) {
+        const response = await fetch(`/api/railway?zoom=${map.getZoom()}`);
+        if (!response.ok) throw new Error(`Не удалось загрузить линию ЖД: ${response.status}`);
+        const data = await response.json();
+        geometry = data.geometry;
+        if (geometry) railwayGeometryCache.set(detailLevel, geometry);
+    }
+
+    if (detailLevel !== getRailwayDetailLevel(map.getZoom())) return;
+
+    railwayDetailLevel = detailLevel;
+    if (railwayLayer) map.removeLayer(railwayLayer);
+
+    if (geometry) {
+        railwayLayer = L.geoJSON(geometry, {
             style: {
                 color: '#2c3e50',
                 weight: 4,
@@ -202,6 +223,8 @@ async function loadRailway() {
         if (showRailway) {
             railwayLayer.addTo(map);
         }
+    } else {
+        railwayLayer = null;
     }
 }
 
@@ -270,4 +293,5 @@ document.getElementById('legend-btn').onclick = () => {
 loadRailway();
 loadPlaces();
 map.on('moveend', loadPlaces);
+map.on('zoomend', loadRailway);
 initLegend();

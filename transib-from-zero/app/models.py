@@ -44,12 +44,20 @@ class RawRailwayPoint(Base):
     __tablename__ = "raw_railway_points"
     id = Column(Integer, primary_key = True)
     geom = Column(Geometry(geometry_type="Point", srid=4326), nullable = False)
+    track_id = Column(String(32), nullable=False)
+    km = Column(Integer, nullable=False)
+    measure = Column(Float, nullable=False)
 
 class Railway(Base):#ready lines
     __tablename__ = "railway"
     id = Column(Integer, primary_key=True)
     name = Column(String(128), nullable=False)
-    geom = Column(Geometry(geometry_type="LINESTRING", srid=4326), nullable=False)
+    geom = Column(Geometry(geometry_type="MULTILINESTRING", srid=4326), nullable=False)
+
+class RailwayDetail(Base):
+    __tablename__ = "railway_detail"
+    zoom_level = Column(Integer, primary_key=True)
+    geom = Column(Geometry(geometry_type="MULTILINESTRING", srid=4326), nullable=False)
 
 class CulturePlace(Base):
     __tablename__ = "culture_place"

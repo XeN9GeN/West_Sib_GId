@@ -66,13 +66,23 @@ def culture_places(
     return result
 
 @app.get("/api/railway")
-def get_railway(db: Session = Depends(get_db)):
-    stmt = select(func.ST_AsGeoJSON(models.Railway.geom)).limit(1)
+def get_railway(zoom: int = Query(6, ge=0, le=22), db: Session = Depends(get_db)):
+    detail_level = max(4, min(18, (zoom // 2) * 2))
+    stmt = select(
+        models.RailwayDetail.zoom_level,
+        func.ST_AsGeoJSON(models.RailwayDetail.geom),
+    ).where(models.RailwayDetail.zoom_level == detail_level)
     row = db.execute(stmt).first()
-    
+
+    if row and row[1]:
+        return {"geometry": json.loads(row[1]), "detail_level": row[0]}
+
+    stmt = select(func.ST_AsGeoJSON(models.Railway.geom)).order_by(models.Railway.id).limit(1)
+    row = db.execute(stmt).first()
+
     if row and row[0]:
-        return {"geometry": json.loads(row[0])}
-    return {"geometry": None}
+        return {"geometry": json.loads(row[0]), "detail_level": None}
+    return {"geometry": None, "detail_level": None}
 
 
 from fastapi.staticfiles import StaticFiles
