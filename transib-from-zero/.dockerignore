@@ -1,0 +1,7 @@
+.git
+.venv
+venv
+tests
+data/
+**/__pycache__/
+*.py[cod]

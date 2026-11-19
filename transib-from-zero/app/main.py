@@ -1,6 +1,6 @@
 from typing import List, Optional
 from fastapi import FastAPI, Depends, Query
-from sqlalchemy import func, select, cast
+from sqlalchemy import func, select, cast, text
 from sqlalchemy.orm import Session
 from geoalchemy2 import Geometry
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,10 +8,13 @@ import json
 
 from .database import SessionLocal, engine, Base
 from . import models, schemas
+from .migrations import ensure_osm_enrichment_schema
 
 
-
-Base.metadata.create_all(bind = engine)
+with engine.begin() as connection:
+    connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+Base.metadata.create_all(bind=engine)
+ensure_osm_enrichment_schema(engine)
 
 app = FastAPI(title="TransSib Culture API")
 
@@ -59,7 +62,9 @@ def culture_places(
             id=r.id, name=r.name, type1=r.type1.value, type2=r.type2.value,
             lat=lat, lon=lon, size_priority=r.size_priority,
             short_description=r.short_description, history=r.history,
-            sources=r.sources or [], creation_date=r.creation_date, 
+            photo_url=r.photo_url, photo_attribution=r.photo_attribution,
+            sources=r.sources or [], creation_date=r.creation_date,
+            osm_type=r.osm_type, osm_id=r.osm_id, wikidata_id=r.wikidata_id,
             marker=schemas.MarkerStyle(**r.marker)
         ))
         

@@ -4,9 +4,10 @@ from pathlib import Path
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import text
 from app.database import engine, SessionLocal, Base
-import xml.etree.ElementTree as ET
-from sqlalchemy import text
 from app import models
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RAILWAY_POINTS_FILE = PROJECT_ROOT / "data" / "row_trailway_points.xml"
 
 TRAIN_COORDS = [
     ("Омск",              73.3242, 54.9885, 18000),
@@ -67,11 +68,8 @@ PLACES = [
     ("Ботанический сад СО РАН", "nature", "reserve", 54.9800, 83.0000, "Крупнейший ботанический сад Сибири.", "Основан в 1946 году.", ["https://csbg.nsc.ru"], dt.date(1946,1,1), 2.2),
 ]
 
-Base.metadata.create_all(bind=engine)
-
-
 def load_railway_points(db):
-    file_path = Path(__file__).with_name("row_trailway_points.xml")
+    file_path = RAILWAY_POINTS_FILE
 
     lat_pattern = re.compile(r'LAT="([\d\.]+)"')
     lon_pattern = re.compile(r'LON="([\d\.]+)"')
@@ -182,6 +180,7 @@ def main():
     try:
         db.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         db.commit()
+        Base.metadata.create_all(bind=engine)
 
         db.execute(text("""
             ALTER TABLE raw_railway_points
@@ -228,7 +227,7 @@ def main():
             | (models.RawRailwayPoint.measure.is_(None))
         ).first() is not None
         if db.query(models.RawRailwayPoint).count() == 0 or points_need_reload:
-            file_path = Path(__file__).with_name("row_trailway_points.xml")
+            file_path = RAILWAY_POINTS_FILE
             if not file_path.is_file():
                 raise FileNotFoundError(f"Файл {file_path} не найден")
             db.query(models.RawRailwayPoint).delete(synchronize_session=False)

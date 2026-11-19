@@ -20,6 +20,8 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
     environment:
       - DATABASE_URL=postgresql://transsib:transsib@db:5432/transsib
     depends_on:

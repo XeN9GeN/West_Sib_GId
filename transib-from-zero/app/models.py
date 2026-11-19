@@ -1,5 +1,18 @@
 import enum
-from sqlalchemy import Column, Integer, String, Float, Enum, ForeignKey, Text, Date, ARRAY
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Date,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    ARRAY,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geography, Geometry
 from .database import Base
@@ -48,6 +61,34 @@ class RawRailwayPoint(Base):
     km = Column(Integer, nullable=False)
     measure = Column(Float, nullable=False)
 
+class OSMPOI(Base):
+    __tablename__ = "osm_pois"
+    id = Column(Integer, primary_key=True)
+    osm_type = Column(String(16), nullable=False)
+    osm_id = Column(BigInteger, nullable=False)
+    name = Column(String(512), nullable=True)
+    tags = Column(JSON, nullable=False)
+    geom = Column(Geometry(geometry_type="POINT", srid=4326), nullable=False)
+    wikidata_id = Column(String(32), nullable=True)
+    wikidata_label = Column(String(512), nullable=True)
+    wikidata_description = Column(Text, nullable=True)
+    wikipedia_url = Column(String(1024), nullable=True)
+    image_url = Column(String(1024), nullable=True)
+    image_page_url = Column(String(1024), nullable=True)
+    image_attribution = Column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("osm_type", "osm_id", name="uq_osm_pois_osm_identity"),
+    )
+
+class OSMPOINearRailway(Base):
+    __tablename__ = "osm_pois_near_railway"
+    osm_poi_id = Column(
+        Integer,
+        ForeignKey("osm_pois.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
 class Railway(Base):#ready lines
     __tablename__ = "railway"
     id = Column(Integer, primary_key=True)
@@ -65,11 +106,15 @@ class CulturePlace(Base):
     name = Column(String(255), nullable=False, index=True)
     type1 = Column(Enum(Type1), nullable=False)
     type2 = Column(Enum(Type2), nullable=False, index=True)
-    short_description = Column(Text, nullable=False)
+    short_description = Column(Text, nullable=True)
     history = Column(Text, nullable=True)
     sources = Column(ARRAY(String), nullable=True)
     creation_date = Column(Date, nullable=True)
-    photo_url = Column(String(512), nullable=True)
+    photo_url = Column(String(1024), nullable=True)
+    photo_attribution = Column(Text, nullable=True)
+    osm_type = Column(String(16), nullable=True)
+    osm_id = Column(BigInteger, nullable=True)
+    wikidata_id = Column(String(32), nullable=True)
     size_priority = Column(Float, nullable=False, default=1.0)
     geom = Column(Geography(geometry_type="POINT", srid=4326), nullable=False)
     train_coord_id = Column(Integer, ForeignKey("train_coord.id"), nullable=True)

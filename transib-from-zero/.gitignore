@@ -1,1 +1,4 @@
-transib-from-zero/row_trailway_points.xml
+data/row_trailway_points.xml
+data/osm/
+**/__pycache__/
+*.py[cod]

@@ -23,6 +23,26 @@ const type2Labels = {
     historic_nature: "Истор. природа"
 };
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    })[character]);
+}
+
+function safeHttpUrl(value) {
+    if (!value) return null;
+    try {
+        const url = new URL(value, window.location.origin);
+        return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+    } catch {
+        return null;
+    }
+}
+
 
 
 function initLegend() {
@@ -75,29 +95,39 @@ function getPopupContent(p) {
         <i class="fa-solid ${p.marker.icon}"></i>
     </div>`;
 
+    const photoUrl = safeHttpUrl(p.photo_url);
     const imageHtml = `<div class="popup-image-box">
-        ${p.photo_url ? `<img src="${p.photo_url}" alt="${p.name}">` : 'Нет фото'}
+        ${photoUrl ? `<img src="${escapeHtml(photoUrl)}" alt="${escapeHtml(p.name)}">` : 'Нет фото'}
     </div>`;
+    const attributionHtml = p.photo_attribution
+        ? `<div class="popup-photo-attribution">${escapeHtml(p.photo_attribution)}</div>`
+        : '';
 
     const dateStr = p.creation_date ? ` • Год: ${p.creation_date}` : '';
     const fieldsHtml = `<div class="popup-fields">
-        <h3>${p.name}</h3>
-        <div><b>Тип:</b> ${type1Labels[p.type1]} • ${type2Labels[p.type2]}</div>
+        <h3>${escapeHtml(p.name)}</h3>
+        <div><b>Тип:</b> ${escapeHtml(type1Labels[p.type1] || p.type1)} • ${escapeHtml(type2Labels[p.type2] || p.type2)}</div>
         <div><b>Координаты:</b> ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${dateStr}</div>
     </div>`;
 
     const descHtml = `<div class="popup-description">
-        ${p.history || p.short_description || 'Описание отсутствует.'}
+        ${escapeHtml(p.history || p.short_description || 'Описание отсутствует.')}
     </div>`;
 
     let sourcesHtml = '';
     if (p.sources && p.sources.length > 0) {
-        const links = p.sources.map(url => `<a href="${url}" target="_blank">${url}</a>`).join('');
+        const links = p.sources.map(source => {
+            const url = safeHttpUrl(source);
+            if (!url) return '';
+            const label = new URL(url).hostname.replace(/^www\./, '');
+            return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+        }).filter(Boolean).join('');
         sourcesHtml = `<div class="popup-sources"><b>Источники:</b><br>${links}</div>`;
     }
 
     return `<div class="popup-card">
         <div class="popup-header">${iconHtml}${imageHtml}</div>
+        ${attributionHtml}
         ${fieldsHtml}
         ${descHtml}
         ${sourcesHtml}
@@ -161,7 +191,7 @@ function renderSidebar() {
         if (!marker) return;
 
         const li = document.createElement('li');
-        li.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${place.marker.color}; border-radius:50%; margin-right:8px;"></span> ${place.name}`;
+        li.innerHTML = `<span style="display:inline-block; width:10px; height:10px; background:${place.marker.color}; border-radius:50%; margin-right:8px;"></span> ${escapeHtml(place.name)}`;
         
         li.onclick = () => {
             map.flyTo([place.lat, place.lon], 15, { duration: 1 });
@@ -178,7 +208,9 @@ async function loadPlaces() {
     const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
 
     const response = await fetch(`/api/culture_places?bbox=${bbox}`);
+    if (!response.ok) throw new Error(`Не удалось загрузить объекты культуры: ${response.status}`);
     allPlaces = await response.json();
+    if (!Array.isArray(allPlaces)) throw new Error('API вернул некорректный список объектов культуры.');
 
     renderMarkers();
 }

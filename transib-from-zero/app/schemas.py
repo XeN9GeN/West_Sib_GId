@@ -15,9 +15,13 @@ class CulturePlaceOut(BaseModel):
     lat: float
     lon: float
     size_priority: float
-    short_description: str
+    short_description: Optional[str] = None
     history: Optional[str] = None
     photo_url: Optional[str] = None
+    photo_attribution: Optional[str] = None
     sources: Optional[List[str]] = None
     creation_date: Optional[date] = None
+    osm_type: Optional[str] = None
+    osm_id: Optional[int] = None
+    wikidata_id: Optional[str] = None
     marker: MarkerStyle
