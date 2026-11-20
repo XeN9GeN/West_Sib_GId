@@ -72,6 +72,7 @@ class OSMPOI(Base):
     wikidata_id = Column(String(32), nullable=True)
     wikidata_label = Column(String(512), nullable=True)
     wikidata_description = Column(Text, nullable=True)
+    wikipedia_extract = Column(Text, nullable=True)
     wikipedia_url = Column(String(1024), nullable=True)
     image_url = Column(String(1024), nullable=True)
     image_page_url = Column(String(1024), nullable=True)

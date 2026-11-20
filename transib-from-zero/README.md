@@ -30,6 +30,17 @@
 `Retry-After` и повторяет запрос с задержкой. Скрипт не удаляет Docker volume
 с базой данных.
 
+Для объектов с тегом OSM `wikipedia=язык:Название` загрузчик получает краткое
+вступление статьи через MediaWiki API, сохраняет его как запасное описание и
+оставляет ссылку на статью в источниках для атрибуции. Условия повторного
+использования определяются лицензией конкретной статьи. Чтобы выполнить этот
+этап на уже загруженных объектах без поиска Wikidata по координатам:
+
+```powershell
+docker compose up -d --build backend
+docker compose exec backend python -m scripts.enrich_osm --wikipedia-only
+```
+
 Данные © OpenStreetMap contributors, лицензия ODbL:
 https://www.openstreetmap.org/copyright.
 

@@ -7,6 +7,7 @@ def ensure_osm_enrichment_schema(engine):
             ("wikidata_id", "VARCHAR(32)"),
             ("wikidata_label", "VARCHAR(512)"),
             ("wikidata_description", "TEXT"),
+            ("wikipedia_extract", "TEXT"),
             ("wikipedia_url", "VARCHAR(1024)"),
             ("image_url", "VARCHAR(1024)"),
             ("image_page_url", "VARCHAR(1024)"),

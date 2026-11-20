@@ -8,6 +8,7 @@ from app import models
 from scripts import enrich_osm
 from scripts.enrich_osm import (
     SelectedPOI,
+    _culture_place_row,
     _match_nearby_binding,
     _parse_creation_date,
     _source_urls,
@@ -119,6 +120,69 @@ class OSMEnrichmentTests(unittest.TestCase):
                 "%D0%9E%D0%BC%D1%81%D0%BA%D0%B8%D0%B9_%D0%BC%D1%83%D0%B7%D0%B5%D0%B9",
                 "https://commons.wikimedia.org/wiki/File:Photo.jpg",
             ],
+        )
+
+    def test_wikipedia_tag_fetches_intro_and_linked_wikidata_id(self):
+        poi = SelectedPOI(
+            id=5,
+            osm_type="way",
+            osm_id=22,
+            name="Музей",
+            tags={"wikipedia": "ru:Старая_страница"},
+            lon=73.37,
+            lat=54.99,
+        )
+        response = {
+            "query": {
+                "redirects": [
+                    {"from": "Старая страница", "to": "Статья музея"},
+                ],
+                "pages": [{
+                    "title": "Статья музея",
+                    "extract": "Краткое описание музея.",
+                    "pageprops": {"wikibase_item": "Q42"},
+                }],
+            },
+        }
+
+        with patch.object(enrich_osm, "_request_json", return_value=response):
+            extracts = enrich_osm.fetch_wikipedia_extracts([poi])
+
+        self.assertEqual(
+            extracts[5],
+            {
+                "wikipedia_extract": "Краткое описание музея.",
+                "wikidata_id": "Q42",
+                "wikipedia_url": (
+                    "https://ru.wikipedia.org/wiki/"
+                    "%D0%A1%D1%82%D0%B0%D1%82%D1%8C%D1%8F_%D0%BC%D1%83%D0%B7%D0%B5%D1%8F"
+                ),
+            },
+        )
+
+    def test_wikipedia_extract_is_limited_to_short_intro(self):
+        long_text = ("А" * 300 + ". ") * 4
+
+        extract = enrich_osm._short_wikipedia_extract(long_text)
+
+        self.assertLessEqual(len(extract), enrich_osm.WIKIPEDIA_EXTRACT_MAX_CHARS)
+        self.assertTrue(extract.endswith("."))
+
+    def test_wikipedia_extract_is_used_as_description_and_has_source_link(self):
+        poi = models.OSMPOI(
+            osm_type="way",
+            osm_id=22,
+            tags={"name": "Музей", "wikipedia": "ru:Статья_музея"},
+            wikipedia_extract="Краткое описание из статьи.",
+            wikipedia_url="https://ru.wikipedia.org/wiki/Статья_музея",
+        )
+
+        row = _culture_place_row(poi, 73.37, 54.99)
+
+        self.assertEqual(row["short_description"], "Краткое описание из статьи.")
+        self.assertIn(
+            "https://ru.wikipedia.org/wiki/Статья_музея",
+            row["sources"],
         )
 
 

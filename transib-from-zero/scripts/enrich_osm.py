@@ -31,6 +31,8 @@ COORDINATE_MATCH_RADIUS_KM = 0.1
 DIRECT_QUERY_BATCH_SIZE = 100
 COORDINATE_QUERY_BATCH_SIZE = 20
 COMMONS_QUERY_BATCH_SIZE = 50
+WIKIPEDIA_QUERY_BATCH_SIZE = 20
+WIKIPEDIA_EXTRACT_MAX_CHARS = 800
 BATCH_SIZE = 500
 WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS = 1.0
 WIKIMEDIA_MAX_RETRIES = 5
@@ -54,6 +56,7 @@ class SelectedPOI:
     lon: float
     lat: float
     wikidata_id: str = None
+    wikipedia_extract: str = None
 
 
 def _wait_for_wikimedia_request_slot():
@@ -329,6 +332,123 @@ def _plain_text(value):
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", " ", value or ""))).strip()
 
 
+def _parse_wikipedia_tag(value):
+    if not isinstance(value, str) or ":" not in value:
+        return None
+    language, title = value.split(":", 1)
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,20}", language):
+        return None
+    title = title.strip().replace("_", " ")
+    if not title:
+        return None
+    return language, title
+
+
+def _normalized_wikipedia_title(title):
+    return " ".join((title or "").replace("_", " ").split()).casefold()
+
+
+def _short_wikipedia_extract(value):
+    extract = _plain_text(value)
+    if len(extract) <= WIKIPEDIA_EXTRACT_MAX_CHARS:
+        return extract
+    boundary = max(
+        extract.rfind(mark, 0, WIKIPEDIA_EXTRACT_MAX_CHARS)
+        for mark in (".", "!", "?")
+    )
+    if boundary >= WIKIPEDIA_EXTRACT_MAX_CHARS // 2:
+        return extract[:boundary + 1].strip()
+    return extract[:WIKIPEDIA_EXTRACT_MAX_CHARS - 3].rstrip() + "..."
+
+
+def fetch_wikipedia_extracts(pois):
+    requested = {}
+    for poi in pois:
+        if poi.wikipedia_extract:
+            continue
+        parsed = _parse_wikipedia_tag((poi.tags or {}).get("wikipedia"))
+        if parsed:
+            language, title = parsed
+            requested.setdefault(language, {}).setdefault(title, []).append(poi.id)
+
+    results = {}
+    for language, titles_by_name in requested.items():
+        titles = list(titles_by_name)
+        batch_count = math.ceil(len(titles) / WIKIPEDIA_QUERY_BATCH_SIZE)
+        for offset in range(0, len(titles), WIKIPEDIA_QUERY_BATCH_SIZE):
+            batch = titles[offset:offset + WIKIPEDIA_QUERY_BATCH_SIZE]
+            print(
+                f"Wikipedia ({language}): пакет "
+                f"{offset // WIKIPEDIA_QUERY_BATCH_SIZE + 1}/{batch_count} "
+                f"({len(batch)} статей)."
+            )
+            query = urlencode({
+                "action": "query",
+                "format": "json",
+                "formatversion": "2",
+                "prop": "extracts|pageprops",
+                "exintro": "1",
+                "explaintext": "1",
+                "exchars": str(WIKIPEDIA_EXTRACT_MAX_CHARS),
+                "redirects": "1",
+                "titles": "|".join(batch),
+            })
+            payload = _request_json(
+                f"https://{language}.wikipedia.org/w/api.php?{query}"
+            )
+            try:
+                response = payload["query"]
+                pages = response["pages"]
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError(
+                    f"Wikipedia ({language}) вернула ответ неожиданного формата."
+                ) from exc
+
+            mappings = (response.get("normalized") or []) + (
+                response.get("redirects") or []
+            )
+            for page in pages:
+                pageprops = page.get("pageprops") or {}
+                if page.get("missing") or "disambiguation" in pageprops:
+                    continue
+                extract = _short_wikipedia_extract(page.get("extract"))
+                if not extract:
+                    continue
+
+                page_title = page.get("title", "")
+                aliases = {_normalized_wikipedia_title(page_title)}
+                changed = True
+                while changed:
+                    changed = False
+                    for mapping in mappings:
+                        source = _normalized_wikipedia_title(mapping.get("from"))
+                        target = _normalized_wikipedia_title(mapping.get("to"))
+                        if target in aliases and source not in aliases:
+                            aliases.add(source)
+                            changed = True
+
+                wikidata_id = pageprops.get("wikibase_item")
+                if not isinstance(wikidata_id, str) or not re.fullmatch(
+                    r"Q[1-9][0-9]*", wikidata_id
+                ):
+                    wikidata_id = None
+                canonical_title = page_title.replace(" ", "_")
+                wikipedia_url = (
+                    f"https://{language}.wikipedia.org/wiki/"
+                    f"{quote(canonical_title, safe='')}"
+                )
+                for requested_title, poi_ids in titles_by_name.items():
+                    if _normalized_wikipedia_title(requested_title) not in aliases:
+                        continue
+                    for poi_id in poi_ids:
+                        results[poi_id] = {
+                            "wikipedia_extract": extract,
+                            "wikidata_id": wikidata_id,
+                            "wikipedia_url": wikipedia_url,
+                        }
+    return results
+
+
 def fetch_commons_metadata(image_values):
     filenames = list(dict.fromkeys(
         filename for filename in (_commons_filename(value) for value in image_values)
@@ -410,6 +530,7 @@ def _selected_pois(db):
             func.ST_X(geom),
             func.ST_Y(geom),
             models.OSMPOI.wikidata_id,
+            models.OSMPOI.wikipedia_extract,
         ).join(
             models.OSMPOINearRailway,
             models.OSMPOINearRailway.osm_poi_id == models.OSMPOI.id,
@@ -425,6 +546,7 @@ def _selected_pois(db):
             lon=float(row[5]),
             lat=float(row[6]),
             wikidata_id=row[7],
+            wikipedia_extract=row[8],
         )
         for row in rows
     ]
@@ -439,8 +561,11 @@ def _qid_from_tags(tags):
 
 def enrich_selected_pois(db):
     pois = _selected_pois(db)
+    wikipedia = fetch_wikipedia_extracts(pois)
     direct_qids = [
-        _qid_from_tags(poi.tags) or poi.wikidata_id
+        _qid_from_tags(poi.tags)
+        or poi.wikidata_id
+        or wikipedia.get(poi.id, {}).get("wikidata_id")
         for poi in pois
     ]
     direct_metadata = query_wikidata_ids(direct_qids)
@@ -475,6 +600,17 @@ def enrich_selected_pois(db):
     for index, (qid, binding) in matches.items():
         updates[pois[index].id] = _metadata_from_binding(qid, binding, commons)
 
+    for poi in pois:
+        article = wikipedia.get(poi.id)
+        if not article:
+            continue
+        values = updates.setdefault(poi.id, {})
+        values["wikipedia_extract"] = article["wikipedia_extract"]
+        values["wikipedia_url"] = article["wikipedia_url"]
+        article_qid = article.get("wikidata_id")
+        if article_qid and not _qid_from_tags(poi.tags) and not poi.wikidata_id:
+            values.setdefault("wikidata_id", article_qid)
+
     for poi_id, values in updates.items():
         db.execute(
             update(models.OSMPOI)
@@ -483,8 +619,57 @@ def enrich_selected_pois(db):
         )
     db.commit()
     print(
-        f"Обогащено объектом Wikidata {len(updates)} из {len(pois)} выбранных OSM-объектов."
+        f"Обновлено данными Wikidata/Wikipedia объектов: {len(updates)} "
+        f"из {len(pois)} выбранных OSM-объектов."
     )
+
+
+def enrich_wikipedia_tagged_pois(db):
+    pois = _selected_pois(db)
+    wikipedia = fetch_wikipedia_extracts(pois)
+    if not wikipedia:
+        print("Новых статей Wikipedia для загрузки нет.")
+        return
+
+    qid_by_poi = {}
+    for poi in pois:
+        article = wikipedia.get(poi.id, {})
+        qid = article.get("wikidata_id")
+        if qid and not _qid_from_tags(poi.tags) and not poi.wikidata_id:
+            qid_by_poi[poi.id] = qid
+
+    metadata_by_qid = query_wikidata_ids(qid_by_poi.values())
+    bindings = [
+        metadata_by_qid[qid]
+        for qid in dict.fromkeys(qid_by_poi.values())
+        if qid in metadata_by_qid
+    ]
+    image_values = [_binding_value(binding, "imageValue") for binding in bindings]
+    commons = fetch_commons_metadata(image_values)
+
+    pois_by_id = {poi.id: poi for poi in pois}
+    for poi_id, article in wikipedia.items():
+        poi = pois_by_id[poi_id]
+        values = {
+            "wikipedia_extract": article["wikipedia_extract"],
+            "wikipedia_url": article["wikipedia_url"],
+        }
+        qid = qid_by_poi.get(poi_id)
+        if qid:
+            binding = metadata_by_qid.get(qid)
+            if binding:
+                values.update(_metadata_from_binding(qid, binding, commons))
+            else:
+                values["wikidata_id"] = qid
+            values["wikipedia_extract"] = article["wikipedia_extract"]
+            values["wikipedia_url"] = article["wikipedia_url"]
+        db.execute(
+            update(models.OSMPOI)
+            .where(models.OSMPOI.id == poi_id)
+            .values(**values)
+        )
+    db.commit()
+    print(f"Загружены описания Wikipedia для объектов: {len(wikipedia)}.")
 
 
 def map_osm_tags(tags):
@@ -535,12 +720,14 @@ def _parse_creation_date(tags):
 
 
 def _wikipedia_tag_url(value):
-    if not value or ":" not in value:
+    parsed = _parse_wikipedia_tag(value)
+    if not parsed:
         return None
-    language, title = value.split(":", 1)
-    if not re.fullmatch(r"[a-z-]+", language) or not title:
-        return None
-    return f"https://{language}.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
+    language, title = parsed
+    return (
+        f"https://{language}.wikipedia.org/wiki/"
+        f"{quote(title.replace(' ', '_'), safe='')}"
+    )
 
 
 def _source_urls(poi, metadata):
@@ -569,8 +756,9 @@ def _culture_place_row(poi, lon, lat):
         return None
 
     description = (
-        poi.wikidata_description
-        or tags.get("description:ru")
+        tags.get("description:ru")
+        or poi.wikipedia_extract
+        or poi.wikidata_description
         or tags.get("description")
     )
     type1, type2 = map_osm_tags(tags)
@@ -662,6 +850,11 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--enrich-only", action="store_true")
     mode.add_argument("--promote-only", action="store_true")
+    mode.add_argument(
+        "--wikipedia-only",
+        action="store_true",
+        help="Загрузить тексты по тегам wikipedia без поиска по координатам.",
+    )
     args = parser.parse_args()
 
     with engine.begin() as connection:
@@ -671,7 +864,10 @@ def main():
     db = SessionLocal()
     try:
         if not args.promote_only:
-            enrich_selected_pois(db)
+            if args.wikipedia_only:
+                enrich_wikipedia_tagged_pois(db)
+            else:
+                enrich_selected_pois(db)
         if not args.enrich_only:
             promote_selected_pois(db)
     finally:
