@@ -22,6 +22,18 @@ const type2Labels = {
     river: "Реки", reserve: "Заповедники", forest: "Леса",
     historic_nature: "Истор. природа"
 };
+const type2DescriptionLabels = {
+    museum: "Музей",
+    monument: "Памятник",
+    architecture: "Архитектурный объект",
+    theater: "Театр",
+    temple: "Храм",
+    lake: "Озеро",
+    river: "Река",
+    reserve: "Заповедник",
+    forest: "Лес",
+    historic_nature: "Природный объект с историческим значением"
+};
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -43,6 +55,13 @@ function safeHttpUrl(value) {
     }
 }
 
+function getPlaceDescription(place) {
+    const description = [place.history, place.short_description]
+        .find(value => typeof value === 'string' && value.trim());
+    return description
+        ? description.trim()
+        : type2DescriptionLabels[place.type2] || 'Объект культуры';
+}
 
 
 function initLegend() {
@@ -111,7 +130,7 @@ function getPopupContent(p) {
     </div>`;
 
     const descHtml = `<div class="popup-description">
-        ${escapeHtml(p.history || p.short_description || 'Описание отсутствует.')}
+        ${escapeHtml(getPlaceDescription(p))}
     </div>`;
 
     let sourcesHtml = '';

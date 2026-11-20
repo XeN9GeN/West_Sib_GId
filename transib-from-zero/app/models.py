@@ -74,6 +74,8 @@ class OSMPOI(Base):
     wikidata_description = Column(Text, nullable=True)
     wikipedia_extract = Column(Text, nullable=True)
     wikipedia_url = Column(String(1024), nullable=True)
+    wikivoyage_extract = Column(Text, nullable=True)
+    wikivoyage_url = Column(String(1024), nullable=True)
     image_url = Column(String(1024), nullable=True)
     image_page_url = Column(String(1024), nullable=True)
     image_attribution = Column(Text, nullable=True)

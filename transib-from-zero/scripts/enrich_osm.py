@@ -25,14 +25,16 @@ from app.migrations import ensure_osm_enrichment_schema
 
 
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
+WIKIDATA_API_URL = "https://www.wikidata.org/w/api.php"
 COMMONS_API_URL = "https://commons.wikimedia.org/w/api.php"
 REQUEST_TIMEOUT_SECONDS = 60
 COORDINATE_MATCH_RADIUS_KM = 0.1
 DIRECT_QUERY_BATCH_SIZE = 100
 COORDINATE_QUERY_BATCH_SIZE = 20
 COMMONS_QUERY_BATCH_SIZE = 50
-WIKIPEDIA_QUERY_BATCH_SIZE = 20
-WIKIPEDIA_EXTRACT_MAX_CHARS = 800
+WIKI_ARTICLE_QUERY_BATCH_SIZE = 20
+WIKIDATA_ENTITY_BATCH_SIZE = 50
+WIKI_ARTICLE_EXTRACT_MAX_CHARS = 800
 BATCH_SIZE = 500
 WIKIMEDIA_MIN_REQUEST_INTERVAL_SECONDS = 1.0
 WIKIMEDIA_MAX_RETRIES = 5
@@ -56,7 +58,10 @@ class SelectedPOI:
     lon: float
     lat: float
     wikidata_id: str = None
+    wikidata_description: str = None
     wikipedia_extract: str = None
+    wikivoyage_extract: str = None
+    wikivoyage_url: str = None
 
 
 def _wait_for_wikimedia_request_slot():
@@ -332,7 +337,7 @@ def _plain_text(value):
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]*>", " ", value or ""))).strip()
 
 
-def _parse_wikipedia_tag(value):
+def _parse_wiki_tag(value):
     if not isinstance(value, str) or ":" not in value:
         return None
     language, title = value.split(":", 1)
@@ -344,42 +349,33 @@ def _parse_wikipedia_tag(value):
     return language, title
 
 
-def _normalized_wikipedia_title(title):
+def _normalized_wiki_title(title):
     return " ".join((title or "").replace("_", " ").split()).casefold()
 
 
-def _short_wikipedia_extract(value):
+def _short_wiki_extract(value):
     extract = _plain_text(value)
-    if len(extract) <= WIKIPEDIA_EXTRACT_MAX_CHARS:
+    if len(extract) <= WIKI_ARTICLE_EXTRACT_MAX_CHARS:
         return extract
     boundary = max(
-        extract.rfind(mark, 0, WIKIPEDIA_EXTRACT_MAX_CHARS)
+        extract.rfind(mark, 0, WIKI_ARTICLE_EXTRACT_MAX_CHARS)
         for mark in (".", "!", "?")
     )
-    if boundary >= WIKIPEDIA_EXTRACT_MAX_CHARS // 2:
+    if boundary >= WIKI_ARTICLE_EXTRACT_MAX_CHARS // 2:
         return extract[:boundary + 1].strip()
-    return extract[:WIKIPEDIA_EXTRACT_MAX_CHARS - 3].rstrip() + "..."
+    return extract[:WIKI_ARTICLE_EXTRACT_MAX_CHARS - 3].rstrip() + "..."
 
 
-def fetch_wikipedia_extracts(pois):
-    requested = {}
-    for poi in pois:
-        if poi.wikipedia_extract:
-            continue
-        parsed = _parse_wikipedia_tag((poi.tags or {}).get("wikipedia"))
-        if parsed:
-            language, title = parsed
-            requested.setdefault(language, {}).setdefault(title, []).append(poi.id)
-
+def _fetch_mediawiki_extracts(requested, project):
     results = {}
     for language, titles_by_name in requested.items():
         titles = list(titles_by_name)
-        batch_count = math.ceil(len(titles) / WIKIPEDIA_QUERY_BATCH_SIZE)
-        for offset in range(0, len(titles), WIKIPEDIA_QUERY_BATCH_SIZE):
-            batch = titles[offset:offset + WIKIPEDIA_QUERY_BATCH_SIZE]
+        batch_count = math.ceil(len(titles) / WIKI_ARTICLE_QUERY_BATCH_SIZE)
+        for offset in range(0, len(titles), WIKI_ARTICLE_QUERY_BATCH_SIZE):
+            batch = titles[offset:offset + WIKI_ARTICLE_QUERY_BATCH_SIZE]
             print(
-                f"Wikipedia ({language}): пакет "
-                f"{offset // WIKIPEDIA_QUERY_BATCH_SIZE + 1}/{batch_count} "
+                f"{project.capitalize()} ({language}): пакет "
+                f"{offset // WIKI_ARTICLE_QUERY_BATCH_SIZE + 1}/{batch_count} "
                 f"({len(batch)} статей)."
             )
             query = urlencode({
@@ -389,19 +385,20 @@ def fetch_wikipedia_extracts(pois):
                 "prop": "extracts|pageprops",
                 "exintro": "1",
                 "explaintext": "1",
-                "exchars": str(WIKIPEDIA_EXTRACT_MAX_CHARS),
+                "exchars": str(WIKI_ARTICLE_EXTRACT_MAX_CHARS),
                 "redirects": "1",
                 "titles": "|".join(batch),
             })
             payload = _request_json(
-                f"https://{language}.wikipedia.org/w/api.php?{query}"
+                f"https://{language}.{project}.org/w/api.php?{query}"
             )
             try:
                 response = payload["query"]
                 pages = response["pages"]
             except (KeyError, TypeError) as exc:
                 raise RuntimeError(
-                    f"Wikipedia ({language}) вернула ответ неожиданного формата."
+                    f"{project.capitalize()} ({language}) вернула ответ "
+                    "неожиданного формата."
                 ) from exc
 
             mappings = (response.get("normalized") or []) + (
@@ -411,18 +408,18 @@ def fetch_wikipedia_extracts(pois):
                 pageprops = page.get("pageprops") or {}
                 if page.get("missing") or "disambiguation" in pageprops:
                     continue
-                extract = _short_wikipedia_extract(page.get("extract"))
+                extract = _short_wiki_extract(page.get("extract"))
                 if not extract:
                     continue
 
                 page_title = page.get("title", "")
-                aliases = {_normalized_wikipedia_title(page_title)}
+                aliases = {_normalized_wiki_title(page_title)}
                 changed = True
                 while changed:
                     changed = False
                     for mapping in mappings:
-                        source = _normalized_wikipedia_title(mapping.get("from"))
-                        target = _normalized_wikipedia_title(mapping.get("to"))
+                        source = _normalized_wiki_title(mapping.get("from"))
+                        target = _normalized_wiki_title(mapping.get("to"))
                         if target in aliases and source not in aliases:
                             aliases.add(source)
                             changed = True
@@ -433,19 +430,132 @@ def fetch_wikipedia_extracts(pois):
                 ):
                     wikidata_id = None
                 canonical_title = page_title.replace(" ", "_")
-                wikipedia_url = (
-                    f"https://{language}.wikipedia.org/wiki/"
+                article_url = (
+                    f"https://{language}.{project}.org/wiki/"
                     f"{quote(canonical_title, safe='')}"
                 )
-                for requested_title, poi_ids in titles_by_name.items():
-                    if _normalized_wikipedia_title(requested_title) not in aliases:
+                for requested_title in titles_by_name:
+                    normalized_title = _normalized_wiki_title(requested_title)
+                    if normalized_title not in aliases:
                         continue
-                    for poi_id in poi_ids:
-                        results[poi_id] = {
-                            "wikipedia_extract": extract,
-                            "wikidata_id": wikidata_id,
-                            "wikipedia_url": wikipedia_url,
-                        }
+                    results[(language, normalized_title)] = {
+                        "extract": extract,
+                        "wikidata_id": wikidata_id,
+                        "url": article_url,
+                    }
+    return results
+
+
+def fetch_wikipedia_extracts(pois):
+    requested = {}
+    for poi in pois:
+        if poi.wikipedia_extract:
+            continue
+        parsed = _parse_wiki_tag((poi.tags or {}).get("wikipedia"))
+        if parsed:
+            language, title = parsed
+            requested.setdefault(language, {}).setdefault(title, []).append(poi.id)
+
+    articles = _fetch_mediawiki_extracts(requested, "wikipedia")
+    results = {}
+    for language, titles_by_name in requested.items():
+        for title, poi_ids in titles_by_name.items():
+            article = articles.get((language, _normalized_wiki_title(title)))
+            if not article:
+                continue
+            for poi_id in poi_ids:
+                results[poi_id] = {
+                    "wikipedia_extract": article["extract"],
+                    "wikidata_id": article["wikidata_id"],
+                    "wikipedia_url": article["url"],
+                }
+    return results
+
+
+def _wikivoyage_titles_by_qid(qids):
+    unique_qids = list(dict.fromkeys(
+        qid for qid in qids
+        if isinstance(qid, str) and re.fullmatch(r"Q[1-9][0-9]*", qid)
+    ))
+    titles = {}
+    batch_count = math.ceil(len(unique_qids) / WIKIDATA_ENTITY_BATCH_SIZE)
+    for offset in range(0, len(unique_qids), WIKIDATA_ENTITY_BATCH_SIZE):
+        batch = unique_qids[offset:offset + WIKIDATA_ENTITY_BATCH_SIZE]
+        print(
+            f"Ссылки Wikidata на Wikivoyage: пакет "
+            f"{offset // WIKIDATA_ENTITY_BATCH_SIZE + 1}/{batch_count} "
+            f"({len(batch)} ID)."
+        )
+        query = urlencode({
+            "action": "wbgetentities",
+            "format": "json",
+            "props": "sitelinks",
+            "sitefilter": "ruwikivoyage",
+            "ids": "|".join(batch),
+        })
+        payload = _request_json(f"{WIKIDATA_API_URL}?{query}")
+        try:
+            entities = payload["entities"]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(
+                "Wikidata вернула ответ со ссылками WikiVoyage неожиданного формата."
+            ) from exc
+        for qid, entity in entities.items():
+            sitelink = (entity.get("sitelinks") or {}).get("ruwikivoyage")
+            title = sitelink.get("title") if sitelink else None
+            if title:
+                titles[qid] = title
+    return titles
+
+
+def fetch_wikivoyage_extracts(pois):
+    requested = {}
+    article_by_poi = {}
+    eligible = [
+        poi for poi in pois
+        if not poi.wikivoyage_extract
+        and not any(
+            isinstance(value, str) and value.strip()
+            for value in (
+                (poi.tags or {}).get("description:ru"),
+                (poi.tags or {}).get("description"),
+                poi.wikipedia_extract,
+                poi.wikidata_description,
+            )
+        )
+    ]
+
+    qid_by_poi = {}
+    qids_without_direct_article = []
+    for poi in eligible:
+        parsed = _parse_wiki_tag((poi.tags or {}).get("wikivoyage"))
+        if parsed:
+            article_by_poi[poi.id] = parsed
+            continue
+        qid = _qid_from_tags(poi.tags) or poi.wikidata_id
+        if qid and re.fullmatch(r"Q[1-9][0-9]*", qid):
+            qid_by_poi[poi.id] = qid
+            qids_without_direct_article.append(qid)
+
+    title_by_qid = _wikivoyage_titles_by_qid(qids_without_direct_article)
+    for poi_id, qid in qid_by_poi.items():
+        title = title_by_qid.get(qid)
+        if title:
+            article_by_poi[poi_id] = ("ru", title)
+
+    for poi_id, (language, title) in article_by_poi.items():
+        requested.setdefault(language, {}).setdefault(title, [])
+        requested[language][title].append(poi_id)
+
+    articles = _fetch_mediawiki_extracts(requested, "wikivoyage")
+    results = {}
+    for poi_id, (language, title) in article_by_poi.items():
+        article = articles.get((language, _normalized_wiki_title(title)))
+        if article:
+            results[poi_id] = {
+                "wikivoyage_extract": article["extract"],
+                "wikivoyage_url": article["url"],
+            }
     return results
 
 
@@ -530,7 +640,10 @@ def _selected_pois(db):
             func.ST_X(geom),
             func.ST_Y(geom),
             models.OSMPOI.wikidata_id,
+            models.OSMPOI.wikidata_description,
             models.OSMPOI.wikipedia_extract,
+            models.OSMPOI.wikivoyage_extract,
+            models.OSMPOI.wikivoyage_url,
         ).join(
             models.OSMPOINearRailway,
             models.OSMPOINearRailway.osm_poi_id == models.OSMPOI.id,
@@ -546,7 +659,10 @@ def _selected_pois(db):
             lon=float(row[5]),
             lat=float(row[6]),
             wikidata_id=row[7],
-            wikipedia_extract=row[8],
+            wikidata_description=row[8],
+            wikipedia_extract=row[9],
+            wikivoyage_extract=row[10],
+            wikivoyage_url=row[11],
         )
         for row in rows
     ]
@@ -622,6 +738,23 @@ def enrich_selected_pois(db):
         f"Обновлено данными Wikidata/Wikipedia объектов: {len(updates)} "
         f"из {len(pois)} выбранных OSM-объектов."
     )
+    enrich_wikivoyage_tagged_pois(db)
+
+
+def enrich_wikivoyage_tagged_pois(db):
+    extracts = fetch_wikivoyage_extracts(_selected_pois(db))
+    if not extracts:
+        print("Подходящих статей Wikivoyage для объектов без описания не найдено.")
+        return
+
+    for poi_id, values in extracts.items():
+        db.execute(
+            update(models.OSMPOI)
+            .where(models.OSMPOI.id == poi_id)
+            .values(**values)
+        )
+    db.commit()
+    print(f"Загружены описания Wikivoyage для объектов: {len(extracts)}.")
 
 
 def enrich_wikipedia_tagged_pois(db):
@@ -719,15 +852,19 @@ def _parse_creation_date(tags):
         return None
 
 
-def _wikipedia_tag_url(value):
-    parsed = _parse_wikipedia_tag(value)
+def _wiki_tag_url(value, project):
+    parsed = _parse_wiki_tag(value)
     if not parsed:
         return None
     language, title = parsed
     return (
-        f"https://{language}.wikipedia.org/wiki/"
+        f"https://{language}.{project}.org/wiki/"
         f"{quote(title.replace(' ', '_'), safe='')}"
     )
+
+
+def _wikipedia_tag_url(value):
+    return _wiki_tag_url(value, "wikipedia")
 
 
 def _source_urls(poi, metadata):
@@ -740,6 +877,12 @@ def _source_urls(poi, metadata):
     )
     if wikipedia_url:
         sources.append(wikipedia_url)
+    wikivoyage_url = metadata.get("wikivoyage_url") or _wiki_tag_url(
+        (poi.tags or {}).get("wikivoyage"),
+        "wikivoyage",
+    )
+    if wikivoyage_url:
+        sources.append(wikivoyage_url)
     if metadata.get("image_page_url"):
         sources.append(metadata["image_page_url"])
     return list(dict.fromkeys(sources))
@@ -760,6 +903,7 @@ def _culture_place_row(poi, lon, lat):
         or poi.wikipedia_extract
         or poi.wikidata_description
         or tags.get("description")
+        or poi.wikivoyage_extract
     )
     type1, type2 = map_osm_tags(tags)
     return {
@@ -774,6 +918,7 @@ def _culture_place_row(poi, lon, lat):
         "sources": _source_urls(poi, {
             "wikidata_id": poi.wikidata_id,
             "wikipedia_url": poi.wikipedia_url,
+            "wikivoyage_url": poi.wikivoyage_url,
             "image_page_url": poi.image_page_url,
         }),
         "creation_date": _parse_creation_date(tags),
@@ -855,6 +1000,11 @@ def main():
         action="store_true",
         help="Загрузить тексты по тегам wikipedia без поиска по координатам.",
     )
+    mode.add_argument(
+        "--wikivoyage-only",
+        action="store_true",
+        help="Загрузить точные статьи Wikivoyage по тегам или Wikidata ID.",
+    )
     args = parser.parse_args()
 
     with engine.begin() as connection:
@@ -866,6 +1016,8 @@ def main():
         if not args.promote_only:
             if args.wikipedia_only:
                 enrich_wikipedia_tagged_pois(db)
+            elif args.wikivoyage_only:
+                enrich_wikivoyage_tagged_pois(db)
             else:
                 enrich_selected_pois(db)
         if not args.enrich_only:

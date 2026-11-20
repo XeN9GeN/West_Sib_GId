@@ -163,9 +163,9 @@ class OSMEnrichmentTests(unittest.TestCase):
     def test_wikipedia_extract_is_limited_to_short_intro(self):
         long_text = ("А" * 300 + ". ") * 4
 
-        extract = enrich_osm._short_wikipedia_extract(long_text)
+        extract = enrich_osm._short_wiki_extract(long_text)
 
-        self.assertLessEqual(len(extract), enrich_osm.WIKIPEDIA_EXTRACT_MAX_CHARS)
+        self.assertLessEqual(len(extract), enrich_osm.WIKI_ARTICLE_EXTRACT_MAX_CHARS)
         self.assertTrue(extract.endswith("."))
 
     def test_wikipedia_extract_is_used_as_description_and_has_source_link(self):
@@ -184,6 +184,124 @@ class OSMEnrichmentTests(unittest.TestCase):
             "https://ru.wikipedia.org/wiki/Статья_музея",
             row["sources"],
         )
+
+    def test_wikivoyage_extract_uses_exact_wikidata_sitelink(self):
+        poi = SelectedPOI(
+            id=9,
+            osm_type="node",
+            osm_id=27,
+            name="Музей",
+            tags={},
+            lon=73.37,
+            lat=54.99,
+            wikidata_id="Q42",
+        )
+        responses = [
+            {
+                "entities": {
+                    "Q42": {
+                        "sitelinks": {
+                            "ruwikivoyage": {"title": "Омск/Достопримечательности"},
+                        },
+                    },
+                },
+            },
+            {
+                "query": {
+                    "pages": [{
+                        "title": "Омск/Достопримечательности",
+                        "extract": "Путеводная статья об объекте.",
+                        "pageprops": {"wikibase_item": "Q42"},
+                    }],
+                },
+            },
+        ]
+
+        with patch.object(
+            enrich_osm,
+            "_request_json",
+            side_effect=responses,
+        ) as request_mock:
+            extracts = enrich_osm.fetch_wikivoyage_extracts([poi])
+
+        self.assertEqual(
+            extracts[9],
+            {
+                "wikivoyage_extract": "Путеводная статья об объекте.",
+                "wikivoyage_url": (
+                    "https://ru.wikivoyage.org/wiki/"
+                    "%D0%9E%D0%BC%D1%81%D0%BA%2F%D0%94%D0%BE%D1%81%D1%82"
+                    "%D0%BE%D0%BF%D1%80%D0%B8%D0%BC%D0%B5%D1%87%D0%B0%D1%82"
+                    "%D0%B5%D0%BB%D1%8C%D0%BD%D0%BE%D1%81%D1%82%D0%B8"
+                ),
+            },
+        )
+        self.assertEqual(request_mock.call_count, 2)
+
+    def test_wikivoyage_osm_tag_fetches_article_without_wikidata(self):
+        poi = SelectedPOI(
+            id=11,
+            osm_type="node",
+            osm_id=30,
+            name="Музей",
+            tags={"wikivoyage": "ru:Музей_в_Омске"},
+            lon=73.37,
+            lat=54.99,
+        )
+        response = {
+            "query": {
+                "pages": [{
+                    "title": "Музей в Омске",
+                    "extract": "Описание по прямой ссылке из OSM.",
+                    "pageprops": {},
+                }],
+            },
+        }
+
+        with patch.object(enrich_osm, "_request_json", return_value=response):
+            extracts = enrich_osm.fetch_wikivoyage_extracts([poi])
+
+        self.assertEqual(
+            extracts[11]["wikivoyage_extract"],
+            "Описание по прямой ссылке из OSM.",
+        )
+        self.assertEqual(
+            extracts[11]["wikivoyage_url"],
+            "https://ru.wikivoyage.org/wiki/%D0%9C%D1%83%D0%B7%D0%B5%D0%B9_"
+            "%D0%B2_%D0%9E%D0%BC%D1%81%D0%BA%D0%B5",
+        )
+
+    def test_wikivoyage_is_skipped_when_object_already_has_description(self):
+        poi = SelectedPOI(
+            id=10,
+            osm_type="node",
+            osm_id=28,
+            name="Музей",
+            tags={"description": "Описание уже есть."},
+            lon=73.37,
+            lat=54.99,
+            wikidata_id="Q42",
+        )
+
+        with patch.object(enrich_osm, "_request_json") as request_mock:
+            extracts = enrich_osm.fetch_wikivoyage_extracts([poi])
+
+        self.assertEqual(extracts, {})
+        request_mock.assert_not_called()
+
+    def test_wikivoyage_extract_is_promoted_as_last_description_fallback(self):
+        poi = models.OSMPOI(
+            osm_type="way",
+            osm_id=29,
+            tags={"name": "Музей"},
+            wikivoyage_extract="Текст из путеводителя.",
+            wikivoyage_url="https://ru.wikivoyage.org/wiki/Омск",
+        )
+
+        row = _culture_place_row(poi, 73.37, 54.99)
+
+        self.assertEqual(row["short_description"], "Текст из путеводителя.")
+        self.assertIn("https://ru.wikivoyage.org/wiki/Омск", row["sources"])
 
 
 if __name__ == "__main__":

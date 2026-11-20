@@ -41,6 +41,16 @@ docker compose up -d --build backend
 docker compose exec backend python -m scripts.enrich_osm --wikipedia-only
 ```
 
+Для WikiVoyage используются только прямые ссылки из OSM-тега `wikivoyage` или
+из sitelink Wikidata самого объекта; ближайшая статья города не принимается за
+описание достопримечательности. Повторить только этот этап на уже загруженных
+данных можно так:
+
+```powershell
+docker compose up -d --build backend
+docker compose exec backend python -m scripts.enrich_osm --wikivoyage-only
+```
+
 Данные © OpenStreetMap contributors, лицензия ODbL:
 https://www.openstreetmap.org/copyright.
 
