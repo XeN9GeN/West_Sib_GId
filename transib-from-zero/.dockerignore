@@ -3,5 +3,6 @@
 venv
 tests
 data/
+archive/
 **/__pycache__/
 *.py[cod]

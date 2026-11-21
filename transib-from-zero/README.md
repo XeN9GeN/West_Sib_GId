@@ -59,37 +59,10 @@ https://www.openstreetmap.org/copyright.
 - `app/` — FastAPI, модели, схемы и миграции.
 - `frontend/` — веб-карта.
 - `scripts/` — импорт железной дороги, OSM и Wikidata.
-- `agent_research_novosibirsk/` — задание агенту, граница города и JSONL для
-  сбора проверяемых справок по объектам Новосибирска.
+- `archive/` — архивные скрипты, тесты и материалы исследования Новосибирска.
 - `data/` — внешний XML-файл исходных точек ЖД (не хранится в Git).
 - `tests/` — тесты импорта и обогащения.
 - `start_project.ps1` — полный локальный запуск и импорт данных.
 
 Backend доступен по адресу `http://localhost:8000`, документация API —
 `http://localhost:8000/docs`.
-
-Для выгрузки объектов Новосибирска без описаний для исследовательского агента
-запустите из корня проекта:
-
-```powershell
-python -B -m scripts.export_novosibirsk_research
-```
-
-Входной файл появится в `agent_research_novosibirsk/`.
-
-После получения результата агента сначала проверьте его и сопоставление
-объектов с БД без записи:
-
-```powershell
-python -B -m scripts.import_novosibirsk_research
-```
-
-Если проверка прошла, импортируйте проверенные сводки и перезапустите backend:
-
-```powershell
-python -B -m scripts.import_novosibirsk_research --apply
-docker compose up -d --build backend
-```
-
-Импортёр записывает только записи со статусом `ready`, хранит сводку и
-источники отдельно и не перезаписывает существующие описания.
