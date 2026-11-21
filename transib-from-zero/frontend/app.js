@@ -56,11 +56,30 @@ function safeHttpUrl(value) {
 }
 
 function getPlaceDescription(place) {
-    const description = [place.history, place.short_description]
+    const description = [place.history, place.short_description, place.ai_summary]
         .find(value => typeof value === 'string' && value.trim());
     return description
         ? description.trim()
         : type2DescriptionLabels[place.type2] || 'Объект культуры';
+}
+
+function getAiSummarySourcesHtml(place) {
+    const sources = Array.isArray(place.ai_summary_sources)
+        ? place.ai_summary_sources
+        : [];
+    const hasExistingDescription = [place.history, place.short_description]
+        .some(value => typeof value === 'string' && value.trim());
+    if (hasExistingDescription || !place.ai_summary || !sources.length) return '';
+
+    const links = sources.map(source => {
+        const url = safeHttpUrl(source.url);
+        if (!url) return '';
+        const label = source.title || new URL(url).hostname.replace(/^www\./, '');
+        return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+    }).filter(Boolean).join('<br>');
+    return links
+        ? `<div class="popup-sources"><b>Источники сводки:</b><br>${links}</div>`
+        : '';
 }
 
 
@@ -132,6 +151,7 @@ function getPopupContent(p) {
     const descHtml = `<div class="popup-description">
         ${escapeHtml(getPlaceDescription(p))}
     </div>`;
+    const aiSourcesHtml = getAiSummarySourcesHtml(p);
 
     let sourcesHtml = '';
     if (p.sources && p.sources.length > 0) {
@@ -149,6 +169,7 @@ function getPopupContent(p) {
         ${attributionHtml}
         ${fieldsHtml}
         ${descHtml}
+        ${aiSourcesHtml}
         ${sourcesHtml}
     </div>`;
 }

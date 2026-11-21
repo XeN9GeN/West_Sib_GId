@@ -62,6 +62,8 @@ def culture_places(
             id=r.id, name=r.name, type1=r.type1.value, type2=r.type2.value,
             lat=lat, lon=lon, size_priority=r.size_priority,
             short_description=r.short_description, history=r.history,
+            ai_summary=r.ai_summary,
+            ai_summary_sources=r.ai_summary_sources or [],
             photo_url=r.photo_url, photo_attribution=r.photo_attribution,
             sources=r.sources or [], creation_date=r.creation_date,
             osm_type=r.osm_type, osm_id=r.osm_id, wikidata_id=r.wikidata_id,

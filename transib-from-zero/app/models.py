@@ -112,6 +112,8 @@ class CulturePlace(Base):
     short_description = Column(Text, nullable=True)
     history = Column(Text, nullable=True)
     sources = Column(ARRAY(String), nullable=True)
+    ai_summary = Column(Text, nullable=True)
+    ai_summary_sources = Column(JSON, nullable=True)
     creation_date = Column(Date, nullable=True)
     photo_url = Column(String(1024), nullable=True)
     photo_attribution = Column(Text, nullable=True)

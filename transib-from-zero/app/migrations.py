@@ -24,6 +24,8 @@ def ensure_osm_enrichment_schema(engine):
             ("osm_id", "BIGINT"),
             ("wikidata_id", "VARCHAR(32)"),
             ("photo_attribution", "TEXT"),
+            ("ai_summary", "TEXT"),
+            ("ai_summary_sources", "JSON"),
         ):
             connection.execute(text(
                 f"ALTER TABLE culture_place ADD COLUMN IF NOT EXISTS {column} {definition}"

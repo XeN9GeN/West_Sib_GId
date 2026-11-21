@@ -1,5 +1,5 @@
 from datetime import date
-from typing import List, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 class MarkerStyle(BaseModel):
@@ -17,6 +17,8 @@ class CulturePlaceOut(BaseModel):
     size_priority: float
     short_description: Optional[str] = None
     history: Optional[str] = None
+    ai_summary: Optional[str] = None
+    ai_summary_sources: Optional[List[Dict[str, str]]] = None
     photo_url: Optional[str] = None
     photo_attribution: Optional[str] = None
     sources: Optional[List[str]] = None
