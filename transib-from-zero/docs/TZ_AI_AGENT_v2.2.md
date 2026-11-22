@@ -191,6 +191,8 @@ categories: []                        # категории → подкатег�
 
 Маркер подкатегории в YAML: `marker: {color, icon, shape}` (все три поля обязательны — `MarkerStyle.shape` в схеме обязателен).
 
+Опциональное поле подкатегории `trust_ai_summary_as_evidence` — boolean, по умолчанию `false`; если поле явно не задано, валидатор и классификатор трактуют его как `false`. Оно не заменяет глобальный `settings.evidence.trust_researched_ai_summary` и ручную объектную отметку.
+
 ### 5.2. Мини-язык условий
 
 Правило сопоставления (`match`) — список **клауз**; клаузы объединяются по ИЛИ, условия внутри клаузы — по И.
@@ -516,7 +518,7 @@ WHERE d.id = cp.id
 | `classified_at` | TIMESTAMPTZ NULL | — | время первой/последней **смены** классификации; `NULL` = ещё не классифицировано (строка невидима) |
 | `taxonomy_version` | VARCHAR(16) NULL | — | версия YAML при классификации |
 | `classification_evidence` | JSON NULL | — | основания решения (5.3) |
-| `ai_summary_significance_verified` | BOOLEAN NOT NULL DEFAULT `false` | ручное подтверждение владельцем, что источники конкретного `ai_summary` прямо подтверждают значимость объекта; не является автоматической проверкой достоверности текста |
+| `ai_summary_significance_verified` | BOOLEAN NOT NULL DEFAULT `false` | ручное подтверждение владельцем, что источники конкретного `ai_summary` прямо подтверждают значимость объекта; не является автоматической проверкой достоверности текста | Поле сбрасывается при изменении `ai_summary` или `ai_summary_sources`; ручное подтверждение не переносится на обновлённую сводку.
 | `railway_distance_m` | DOUBLE PRECISION NULL | — | раздел 6 |
 | `railway_distance_checked_at` | TIMESTAMPTZ NULL | — | `NULL` = расстояние ещё не считали (5.9) |
 | `description_source` | VARCHAR(32) NULL | — | происхождение обычного описания: `osm_description_ru`/`wikipedia`/`wikidata`/`osm_description`/`wikivoyage`/`manual` |
@@ -846,7 +848,7 @@ apply-decisions <файл.csv>      # массовое применение ре
 **Не трогать:** `models.py`, API, скрипты.
 
 ### Этап 2. Схема БД и `classify_places`
-**Сделать:** колонки 7.1, таблицу аудита 7.2 и реестр `osm_poi_exclusion_registry` 7.2.1 (`models.py` + `ensure_taxonomy_schema`), индексы, вызов `ensure_*` в `init_data.py`; `scripts/classify_places.py` (расстояние 6, классификация, эффективное описание, `--dry-run`, `--report`, `--backfill-origin`); `scripts/manage_places.py`; demo 13.2–13.3; радиус из конфигурации (6.1–6.2); `VISIBLE_CONDITION` в `app/queries.py` (минимальная версия); интеграционные тесты на `transsib_test`.
+**Сделать:** колонки 7.1, таблицу аудита 7.2 и реестр `osm_poi_exclusion_registry` 7.2.1 (`models.py` + `ensure_taxonomy_schema`), индексы, вызов `ensure_*` в `init_data.py`; `scripts/classify_places.py` (расстояние 6, классификация, эффективное описание, `--dry-run`, `--report`, `--backfill-origin`); `scripts/manage_places.py` (включая `verify-ai-significance` и `unverify-ai-significance`); demo 13.2–13.3; радиус из конфигурации (6.1–6.2); `VISIBLE_CONDITION` в `app/queries.py` (минимальная версия); интеграционные тесты на `transsib_test`.
 **Готово, когда:** `--dry-run` на копии БД печатает сводку; повторный запуск даёт 0 обновлений; SQL 18.1, 18.1b, 18.2 возвращают 0; владелец получил: гистограмму `size_priority`, таблицу «подкатегория × решение», списки `classification_review.csv`, `unidentified_rows.csv`, пары дублей demo.
 **Гейт согласования (обязателен):** владелец утверждает таблицу «подкатегория × решение» из `--dry-run` до первого боевого прогона и до этапа 3. Порог описания 11 не менять без отдельного согласования; решения D-3a и `demo.priority_cap` принимаются здесь.
 
@@ -891,6 +893,9 @@ apply-decisions <файл.csv>      # массовое применение ре
 | `historic=memorial` + dedicated `wikipedia` article + `official_website` (два независимых weak-признака) | `monuments_memorials`; показ при выполнении `min_weak: 2` |
 | `historic=memorial` + один `wikidata_id`, без P1435 и других признаков | `pending_review`; ID не считается значимостью |
 | содержательное `quality_description` без других признаков | не повышает значимость; `pending_review`/исключение по режиму подкатегории |
+| `ai_summary` + валидные источники, но `ai_summary_significance_verified = false` | summary может быть эффективным описанием, но не strong-признак; показ только при других независимых признаках |
+| `ai_summary` + валидные источники + ручная отметка `true`, но `trust_ai_summary_as_evidence` отсутствует/false у подкатегории | summary не учитывается как strong; показ только при других независимых признаках |
+| оба флага включены и владелец подтвердил, что источники прямо доказывают значимость конкретного объекта | один `researched_ai_summary` strong; не дублировать его как несколько weak-признаков |
 | `ai_summary` + валидные источники, но `ai_summary_significance_verified = false` | summary может быть эффективным описанием, но не strong-признак; показ только при других независимых признаках |
 | `ai_summary` + валидные источники + `ai_summary_significance_verified = true`, но `trust_ai_summary_as_evidence` отсутствует/false у подкатегории | summary не учитывается как strong; показ только при других независимых признаках |
 | те же условия + оба флага включены и владелец подтвердил, что источники прямо доказывают значимость | один `researched_ai_summary` strong; не дублировать его как несколько weak-признаков |
