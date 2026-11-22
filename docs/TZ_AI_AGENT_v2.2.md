@@ -1,0 +1,1062 @@
+# ТЗ для ИИ-агента (GitHub Copilot): отбор, классификация и отображение культурных и туристических объектов
+
+**Проект:** West_Sib_GId (каталог `transib-from-zero/`)
+**Версия документа:** 2.2 — редакция после проверки v2.1 против кода репозитория (решения владельца D-1…D-5 сохранены; исправлены 6 блокирующих дефектов, учтены риски; см. приложение A)
+**Исполнитель:** GitHub Copilot
+**Расположение:** `transib-from-zero/docs/TZ_AI_AGENT_v2.2.md`. Краткие постоянные правила вынесены в `.github/copilot-instructions.md` (корень репозитория).
+**Язык кода и комментариев:** комментарии, сообщения скриптов и тексты интерфейса — на русском, как в текущем коде; идентификаторы — на английском.
+
+---
+
+## 0. Как пользоваться документом
+
+1. Этот документ — **единственный набор требований** для задачи. Версии v1 (ChatGPT) и v2.1 заменены.
+2. **Приоритет источников истины:** (1) фактический код репозитория, (2) этот документ, (3) предположения в других материалах. Если код противоречит документу — остановиться, описать конфликт, предложить варианты (раздел 19.2).
+3. Раздел 2 содержит результаты архитектурного аудита. Этап 0 «аудит» **уже выполнен**; Copilot сверяет факты раздела 2 с кодом перед началом работ и сообщает о расхождениях.
+4. Работать строго **по этапам** (раздел 15). Один этап — один набор изменений, один отчёт. Перескакивать через этапы запрещено. Для каждого этапа в приложении D дан готовый шаблон запроса.
+5. Метки `[РЕШЕНИЕ]` — принятые архитектурные решения, менять нельзя без согласования владельца. Приложение B содержит ответы D-1…D-5 — это нормативные требования, а не открытые вопросы. Метка `[ПРЕДЛОЖЕНИЕ]` — решение, требующее подтверждения владельца (до подтверждения реализуется в безопасном режиме «по умолчанию выключено»).
+6. Владелец проекта — не программист. Все команды запуска, резервного копирования и проверки должны быть описаны в `README.md` пошагово.
+7. Документ большой. Для каждого этапа читать только указанные в приложении D разделы плюс разделы 1, 14 и 19.
+
+---
+
+## 1. Цель и принципы
+
+Перейти от «показать всё, что нашлось в OSM» к **контролируемому отбору**: на карте остаются только объекты, которые (а) находятся рядом с железной дорогой, (б) культурно или туристически значимы, (в) понятно классифицированы и (г) на крупном масштабе имеют содержательное описание.
+
+| ID | Принцип |
+|---|---|
+| P-1 | Географическая релевантность: не дальше 2500 м от ближайшей точки `raw_railway_points`; расстояние считается до репрезентативной точки объекта, а не до ближайшей границы его геометрии. |
+| P-2 | Наличие объекта в OSM не означает его показ. Тег `historic=*`, `tourism=attraction` или попадание в `monument` — только основание **рассмотреть** объект. |
+| P-3 | Категория, подкатегория, класс объекта (наследие/туризм), статус показа и приоритет — **пять независимых аспектов**. Нельзя смешивать их в одном поле. |
+| P-4 | Исключение ≠ удаление. Объект остаётся в БД с флагом `excluded_from_map` и причиной. |
+| P-5 | Единый источник правил: `config/taxonomy.yaml`. Остальной код читает его или проверяется тестами на согласованность. |
+| P-6 | Ручные решения владельца не перезаписываются автоматическим импортом. |
+| P-7 | Импорт идемпотентен: повторный запуск не создаёт дубликатов и не портит данные. |
+| P-8 | Не выдумывать факты: статус наследия, описание, значимость — только из проверяемых данных. Классификация по одному названию запрещена (допустима только для выбора подкатегории, не для решения о значимости). |
+| P-9 | Неопределённость → `pending_review` (скрыто на карте, но доступно в отчёте/CSV для проверки), а не автоматический показ. После проверки владелец явно принимает ручное решение. |
+| P-10 | Минимальные изменения: адаптировать существующий код, а не переписывать. |
+| P-11 | Каждое требование имеет тест или SQL-проверку. |
+| P-12 | `archive/` не изменяется. |
+| P-13 | **(новое в v2.2)** Невидимость до классификации: строка видна на карте только после того, как для неё рассчитано расстояние до ЖД и выполнена классификация. Единое условие видимости (`VISIBLE_CONDITION`) определено один раз в `app/queries.py` и используется API, отчётами и SQL-проверками. |
+| P-14 | **(новое в v2.2)** Единое эффективное описание: то, что API объявил описанием объекта (и по чему применил фильтр зума), — ровно то, что показывает карточка. Фронтенд не выбирает текст сам. |
+
+---
+
+## 2. Результаты архитектурного аудита (факты о репозитории)
+
+Это результаты предыдущего аудита и основа требований ниже, но не замена проверке текущего состояния ветки `data`. Copilot обязан сверить каждый факт с кодом перед изменениями; при расхождении остановиться и отчитаться. Не считать перечисленные факты независимо подтверждёнными этим документом.
+
+### 2.1. Пайплайн данных (порядок в `start_project.ps1`)
+
+```
+1 docker compose up            → db (PostGIS 16) + backend (FastAPI)
+2 ожидание БД
+3 scripts.init_data            → railway из XML + 40 демо-мест + train_coord
+4 scripts.import_osm_pbf       → Geofabrik PBF (Урал+Сибирь) → osmium tags-filter → osm_pois
+5 scripts.import_osm --select-near-railway --radius-m 5000 → osm_pois_near_railway
+6 scripts.enrich_osm           → Wikidata/Wikipedia/Wikivoyage/Commons → promote в culture_place
+7 проверка API
+```
+
+### 2.2. Таблица находок
+
+| # | Компонент | Факт | Последствие для задачи |
+|---|---|---|---|
+| A-1 | `scripts/import_osm_pbf.py`, `OSM_TAG_FILTERS` | Импортируются только: `tourism=museum,attraction,gallery,zoo`, `historic` (любой), `heritage`, `amenity=theatre,place_of_worship,arts_centre`, `building=church,chapel,mosque,synagogue,temple`, `memorial`. **Тегов `railway=*`, `building=train_station`, `natural=*`, `leisure=nature_reserve`, `boundary=protected_area` в импорте нет.** | Железнодорожные вокзалы и охраняемые природные территории сейчас в БД **не попадают вообще**. Для R-004 и природной категории нужно расширить фильтры (этап 3). |
+| A-2 | `scripts/import_osm.py` | `IMPORT_RADIUS_METERS = 5000`; `select_osm_pois_near_railway` делает `DELETE FROM osm_pois_near_railway` и пересобирает выборку через `ST_DWithin(geography, geography)` по таблице `raw_railway_points` (точки, не линия). `ST_DWithin` включает границу (`<=`). Функциональные GIST-индексы на `(geom::geography)` уже создаются. | R-001 сводится к смене значения и к повторной проверке на этапе promote/classify. Новая пространственная логика не нужна. |
+| A-3 | `scripts/enrich_osm.py`, `promote_selected_pois` | Промоутит **все** объекты из `osm_pois_near_railway` с непустым именем. `ON CONFLICT (osm_type, osm_id) DO UPDATE`: **`type1`, `type2`, `name`, `sources`, `wikidata_id`, `geom` перезаписываются безусловно**; `short_description`, `creation_date`, `photo_*` обновляются через `coalesce(excluded.X, existing.X)` — то есть **новое значение приоритетнее старого**. | Ручная классификация и ручное описание сейчас будут затёрты при повторном запуске. Нужна защита (раздел 8). |
+| A-4 | `enrich_osm.map_osm_tags` | Грубое отображение: всё с `historic`, `memorial`, `heritage`, `tourism=attraction` → `monument`; `natural=water` → `lake`. Тесты `tests/test_osm_enrichment.py` проверяют текущие результаты для `tourism=museum`, `natural=lake`, `natural=water+water=river`. | Функцию **не удалять и не менять** (тесты должны остаться зелёными). Новая классификация — отдельный модуль. |
+| A-5 | `_culture_place_row` | Описание берётся как первое непустое из: `description:ru` → `wikipedia_extract` → `wikidata_description` → `description` → `wikivoyage_extract`; **источник описания не сохраняется**. Wikidata-описание при отсутствии русского берётся английское. | Нужны `description_source` и проверка качества (раздел 9). |
+| A-6 | `app/models.py` | `Type2` — PostgreSQL ENUM (`Enum(Type2)`); `MARKER_STYLE` — словарь по `Type2`; `size_priority` по умолчанию 1.0 (у всех OSM-объектов = 1.0, то есть приоритет сейчас не работает); колонок исключения, класса, расстояния нет; есть `ai_summary`, `ai_summary_sources`. Свойство `marker` читает `MARKER_STYLE`. | Расширять ENUM не будем (R-ENUM, 5.4). Приоритет реализуем через существующее `size_priority`. Модель **не должна** импортировать `app.taxonomy` (риск циклического импорта, 10.3). |
+| A-7 | `app/migrations.py` | Alembic нет. Принятый паттерн: идемпотентная функция `ensure_osm_enrichment_schema(engine)` с `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, вызывается при импорте `app/main.py` и в скриптах. `Base.metadata.create_all` не меняет существующие таблицы. | Новые колонки добавляем новой функцией того же вида. Имя и сигнатуру `ensure_osm_enrichment_schema` **не менять** (её импортирует `archive/`). |
+| A-8 | `app/main.py`, `/api/culture_places` | Принимает только `bbox`; параметры `type1`/`type2` объявлены, **но не используются**; зум не принимается; **N+1**: для каждой строки отдельный SQL за `ST_X/ST_Y`; `ST_Within` по `CAST(geom AS geometry)` не использует индекс на `geography`; `bbox.split(",")` без валидации (500 при мусоре); ограничения числа объектов нет. Модуль `main.py` при **импорте** обращается к БД (`create_all`, `ensure_*`) — импортировать его в юнит-тестах нельзя без БД. | Логику выборки вынести в чистую функцию (`app/queries.py`), чтобы тестировать без БД. |
+| A-9 | `frontend/app.js` | Данные грузятся по `moveend`; зум не передаётся. **Leaflet вызывает `moveend` и после изменения зума**, поэтому отдельная подписка `zoomend` для загрузки объектов не нужна (она остаётся только для `loadRailway`). Подписи категорий жёстко заданы в `type1Labels`, `type2Labels`, `type2DescriptionLabels`; цвета и иконки приходят из API (`p.marker`). `getPlaceDescription`: `history` → `short_description` → `ai_summary` (первое **непустое**, без проверки качества). `getAiSummarySourcesHtml` скрывает источники сводки, если есть любое непустое `history`/`short_description`. Есть защитные `escapeHtml`/`safeHttpUrl` — **сохранить**. Поиск (`allPlaces.find`) ищет только среди объектов, загруженных для текущего bbox/зума. | Подписи и цвета брать из нового `/api/taxonomy`; запросы при движении карты — с отменой устаревших; текст описания — только из `effective_description` (P-14). |
+| A-10 | `scripts/init_data.py` | Создаёт **40** демо-мест (4 блока по 10: Омск; Омск–Татарск; Барабинск; Каргат–Новосибирск) без `osm_type`/`osm_id`, с приблизительными (местами выдуманными) координатами и ручными `size_priority` до 3.0. Сообщение в коде «заполнена 50 местами» **неверно** (исправить на 40). Запускается **до** импорта OSM и вставляет демо, если `culture_place` пуста. Не вызывает `ensure_osm_enrichment_schema`. Часть демо дублирует реальные OSM-объекты (оперный театр, зоопарк, краеведческий музей Новосибирска). Идентификаторов-признаков demo у строк нет (обычный serial `id`). | Демо-данные обходят все фильтры; им нужен признак происхождения (раздел 13), надёжно ставящийся в самом `init_data.py`. |
+| A-11 | `start_project.ps1` | `-RadiusMeters` по умолчанию 5000; шагов 7; файл с BOM (UTF‑8). | Параметр по умолчанию → брать радиус из конфигурации (раздел 6). Сохранить кодировку и BOM. |
+| A-12 | Docker | `.dockerignore` исключает `tests/`, `archive/`, `data/`; код в контейнер **копируется**, а не монтируется (изменения конфигурации требуют `docker compose up --build`). Тесты запускаются **локально** (`python -m unittest`), не в контейнере. | `config/` попадает в образ автоматически (`COPY . .`). Тесты на БД — интеграционные, на **отдельной** БД `transsib_test`, с `skipUnless`. |
+| A-13 | `archive/` (чтение, **не изменять**) | `import_novosibirsk_research.py` импортирует `app.database` (`SessionLocal`, `engine`) и `app.migrations.ensure_osm_enrichment_schema`; пишет **только** `culture_place.ai_summary` и `ai_summary_sources` (и только где `ai_summary IS NULL`); **останавливается с ошибкой**, если у объекта уже есть `short_description` или `history`. Его тесты (`archive/tests`) импортируют `scripts.import_novosibirsk_research`, а сам модуль лежит в `archive/scripts/` — **вероятно, архивные тесты в текущем виде не запускаются** (README архива прямо говорит, что скрипты больше не часть пакета `scripts`). | Не переименовывать эти символы; не менять типы колонок `ai_summary`, `ai_summary_sources`, `geom`, `osm_type`, `osm_id`; классификатор **никогда** не пишет `short_description`, `history`, `ai_summary*`. Критерий R-010 строится на проверке контракта (18.6), а не на запуске архивных тестов; на этапе 0b зафиксировать, запускаются ли они вообще. |
+| A-14 | Реальные данные (`archive/.../novosibirsk_places_input.jsonl`) | В `culture_place` сейчас попали: ~100 отдельных вольеров и животных зоопарка (`attraction=animal`), аттракционы, **6** одинаковых магазинов «Воздушные шары» (`tourism=attraction`), ~60 памятных досок Академгородка, детские школы искусств и ДДТ (`amenity=arts_centre`), «Актовый зал НГПУ» (`amenity=theatre`), цирк (`amenity=theatre` + `theatre:genre=circus`), «Белые медведи» (`natural=water`, из-за чего получили тип «озеро»). | Это реальные тест-кейсы классификатора (раздел 16). |
+| A-15 | Тесты | Фреймворк `unittest`, все тесты чистые/с mock, БД не требуют. | Новые юнит-тесты — тоже без БД. Интеграционные — отдельным набором, с пропуском при недоступной тестовой БД. |
+
+---
+
+## 3. Сводка требований и критериев приёмки
+
+| ID | Требование | Критерий приёмки (кратко) |
+|---|---|---|
+| **R-001** | Показываются только объекты не дальше **2500 м** от ближайшей точки `raw_railway_points`. Правило жёсткое: его не обходит ни ручное включение, ни демо-данные. | SQL 18.1 возвращает 0 строк. |
+| **R-002** | На крупном зуме (от `description_required_from_zoom`, по умолчанию 11) API отдаёт только объекты, у которых есть качественное **эффективное описание** (P-14). | SQL 18.3 + тесты описаний. |
+| **R-003** | Отбор по белому списку + классификация + проверка значимости; ненужное помечается `excluded_from_map` с причиной. | 18.4. |
+| **R-004** | Железнодорожное наследие — **самостоятельная категория верхнего уровня** со своими подкатегориями. | Тесты классификации (16.2). |
+| **R-005** | `monument` не означает автоматический показ; делится на подкатегории; каждый объект проходит проверку значимости. | Тест: объект `historic=memorial` без признаков значимости не показывается. |
+| **R-006** | Наследие и туризм — независимый признак `object_class` (`heritage`/`tourism`/`both`/`unclassified`). | Тесты 16.2. |
+| **R-007** | Единый источник правил `config/taxonomy.yaml`; нет дублирующих списков в Python/JS. | Тест на отсутствие дублей (16.5). |
+| **R-008** | Внешние данные — только из разрешённых источников по заданным правилам (раздел 12). | Ревью + тесты на разбор источников. |
+| **R-009** | Ручные решения и описания не перезаписываются; импорт идемпотентен. | Тесты повторного импорта (16.4). |
+| **R-010** | `archive/` и его контракт не затронуты. | `git diff --stat -- archive/` пуст; контрактный тест (18.6) зелёный. |
+| **R-011** | API обратно совместим: существующие поля ответа не удаляются и не меняют тип. | Тест контракта ответа. |
+| **R-012** | **(новое)** Невидимость до классификации (P-13). | SQL 18.1b; тест `VISIBLE_CONDITION`. |
+| **R-013** | **(новое)** Единое эффективное описание (P-14): API отдаёт `effective_description`, фронтенд показывает только его. | Тесты 16.3, 16.7; ручной чек-лист 11.8. |
+| **R-014** | **(новое)** Журнал аудита ручных и значимых автоматических изменений в таблице `classification_audit_log`. | Тесты `manage_places`; SQL 18.8. |
+
+---
+
+## 4. Целевая архитектура
+
+### 4.1. Поток данных
+
+```
+OSM PBF ─▶ osm_pois ─▶ osm_pois_near_railway (≤ 2500 м)
+                           │
+                           ▼   enrich_osm: Wikidata / Wikipedia / Wikivoyage / Commons
+                       promote ─▶ culture_place  (+ классификация app.taxonomy.classify для НОВЫХ строк)
+                           │
+                           ▼   scripts.classify_places (расстояние, классификация, эффективное описание)
+                       culture_place: category, subcategory, object_class,
+                                      excluded_from_map, exclusion_reason, size_priority,
+                                      railway_distance_m, classified_at, ...
+                           │
+                           ▼   app/queries.py (VISIBLE_CONDITION) + /api/culture_places?bbox&zoom
+                       Leaflet-карта (/api/taxonomy → легенда, подписи, цвета)
+```
+
+### 4.2. Файлы
+
+**Создать:**
+
+| Файл | Назначение |
+|---|---|
+| `config/taxonomy.yaml` | Единственный источник правил (раздел 5). |
+| `app/taxonomy.py` | Загрузка и валидация YAML, мини-язык условий, `classify(facts) → Classification`. **Чистые функции, без БД, без импорта `app.models`.** |
+| `app/description_quality.py` | `assess_description(text, name, cfg) → str`; `pick_effective_description(candidates, name, cfg)`. Чистые функции. |
+| `app/queries.py` | `VISIBLE_CONDITION`, построение SQLAlchemy-запроса для карты (bbox, zoom, фильтры), сборка маркера. Без обращения к БД при импорте. |
+| `scripts/audit_tags.py` | Только чтение: статистика реальных OSM-тегов и шага точек ЖД (этап 0b). |
+| `scripts/classify_places.py` | Пересчёт расстояния/классификации/эффективного описания, отчёт, `--dry-run`. |
+| `scripts/manage_places.py` | Ручные действия владельца (8.3). |
+| `scripts/audit_map_quality.py` | Прогон SQL-проверок из раздела 18, код возврата ≠ 0 при нарушениях. |
+| `tests/test_taxonomy_*.py`, `tests/test_description_quality.py`, `tests/test_map_queries.py`, `tests/test_reimport_protection.py`, `tests/test_archive_contract.py` | Юнит-тесты, без БД (раздел 16). |
+| `tests/test_spatial_integration.py`, `tests/test_manual_protection_integration.py` | Интеграционные, только на `transsib_test` (16.6). |
+| `docs/TZ_AI_AGENT_v2.2.md` | Этот документ. |
+
+**Изменить (минимально):** `app/models.py`, `app/migrations.py` (добавить функцию), `app/schemas.py` (только добавить необязательные поля), `app/main.py`, `scripts/import_osm.py`, `scripts/import_osm_pbf.py`, `scripts/enrich_osm.py`, `scripts/init_data.py`, `frontend/app.js`, `frontend/index.html` (заголовки легенды), `start_project.ps1`, `requirements.txt` (добавить `PyYAML` с точной версией), `.gitignore` (добавить `data/reports/`), `README.md`.
+
+**Запрещено менять:** `archive/**`, `data/row_trailway_points.xml`, том БД `postgres_data` в `docker-compose.yml`, сигнатуры `ensure_osm_enrichment_schema`, `SessionLocal`, `engine`, `map_osm_tags` и существующие тесты (их поведение должно остаться прежним).
+
+---
+
+## 5. Таксономия (`config/taxonomy.yaml`)
+
+### 5.1. Структура файла
+
+```yaml
+version: "1.0"
+settings:            # все пороги — только здесь
+  railway_radius_meters: 2500
+  description:
+    min_chars: 50
+    min_words: 6
+    min_cyrillic_ratio: 0.5
+    placeholder_patterns: []          # регулярные выражения заглушек
+    accept_ai_summary: true           # D-1: только при выполнении условий 9.3
+  evidence:
+    min_strong: 1
+    min_weak: 2
+    historic_year_cutoff: 1975
+    trust_researched_ai_summary: true # D-1: только проверенные summaries с валидными источниками
+  zoom:
+    description_required_from_zoom: 11   # D-2: порог принят; менять только после калибровки и согласования
+    priority_tiers:                       # проверяются сверху вниз, берётся первая подходящая
+      - {max_zoom: 7,  min_priority: 2.5}
+      - {max_zoom: 10, min_priority: 1.8}
+      - {max_zoom: 12, min_priority: 1.2}
+      - {max_zoom: 22, min_priority: 0.0}
+  demo:
+    hide_duplicates: false            # [ПРЕДЛОЖЕНИЕ D-3a] см. 13.3; до решения владельца false
+    priority_cap: null                # [ПРЕДЛОЖЕНИЕ] см. 10.2, п. 4; null = не ограничивать
+object_classes: [heritage, tourism, both, unclassified]
+exclusion_reasons: {}                 # реестр причин (раздел 5.8)
+exclude_rules: []                     # жёсткие исключения (раздел 5.6), у каждого поле overridable
+categories: []                        # категории → подкатегории; у каждой подкатегории match_order (5.3)
+```
+
+Стартовые числа в `zoom.priority_tiers` — гипотезы. Они **калибруются** по гистограмме `size_priority`, которую печатает `classify_places --report` (этап 2), и фиксируются только после проверки владельцем.
+
+Маркер подкатегории в YAML: `marker: {color, icon, shape}` (все три поля обязательны — `MarkerStyle.shape` в схеме обязателен).
+
+### 5.2. Мини-язык условий
+
+Правило сопоставления (`match`) — список **клауз**; клаузы объединяются по ИЛИ, условия внутри клаузы — по И.
+
+```yaml
+match:
+  - tags: ["historic=locomotive"]
+  - tags: ["historic=memorial|monument"]           # любое из значений
+    name_regex: "паровоз|локомотив|тепловоз|электровоз|ФД\\d{2}|ЭР\\d|П36"
+    name_not_regex: "железнодорожного района"
+```
+
+| Ключ клаузы | Смысл |
+|---|---|
+| `tags: ["k=v"]` | тег `k` равен `v`; `v1|v2` — любое из значений |
+| `tags: ["k"]` | тег `k` существует |
+| `tags: ["!k"]` или `["!k=v"]` | тега нет / не равен |
+| `name_regex`, `name_not_regex` | поиск по `name:ru` или `name` без учёта регистра (нормализация ниже) |
+
+**Нормализация названий (обязательна, единая функция `normalize_name`):** `NFKC`, нижний регистр, `ё → е`, схлопывание пробелов. Шаблоны в YAML пишутся уже в нормализованном виде (`молодежн`, а не `молодёжн`). Для коротких аббревиатур обязательны границы слова: `(?<!\w)жд(?!\w)` — иначе «рождественский», «вождь» дадут ложные срабатывания. Каждый `name_regex` с коротким (≤3 буквы) токеном без границ слова — ошибка валидации YAML.
+
+**Название разрешено использовать только для выбора подкатегории/уточнения типа объекта. Оно не является ни strong-, ни weak-признаком значимости, не присваивает статус наследия и не может само по себе привести к показу (P-8).** Любое правило `name_regex` в таблицах 5.5 лишь маршрутизирует кандидата в подкатегорию; затем отдельно применяется проверка 5.7. Список шаблонов в YAML расширяем владельцем.
+
+### 5.3. Порядок вычисления `classify(facts)`
+
+Вход `PoiFacts`: `tags`, `name`, `wikidata_id`, `wikidata_description`, `wikipedia_extract`, `wikipedia_url`, `wikivoyage_extract`, `ai_summary`, `ai_summary_sources` (последние два — только при повторной классификации существующих строк).
+
+1. **Жёсткие исключения** (`exclude_rules`, раздел 5.6) — первое совпавшее правило завершает обработку (кроме правил с `unless`).
+2. **Подкатегория.** Подкатегории обходятся **строго по возрастанию поля `match_order`** (уникальное целое, глобально по всем категориям; порядок записей в YAML и порядок строк в таблицах 5.5 **значения не имеют**). Первое совпадение побеждает. Нормативный глобальный порядок — таблица 5.5.0. Валидатор YAML проверяет уникальность `match_order` и то, что для каждой пары «более общая / более частная» подкатегорий (см. 5.5.0, колонка «Перекрывает») частная имеет меньший `match_order`.
+3. **Нет подкатегории** → `excluded`, причина `unsupported_object_type`.
+4. **Сбор признаков значимости** (раздел 5.7); `name`/`name_regex` из этого набора исключены.
+5. **Решение** по режиму значимости подкатегории (`significance`):
+   - `include` — тип объекта является допустимым кандидатом, но показ разрешён **только при независимом подтверждении значимости** (5.7); само значение `include` не является доказательством;
+   - `review` — при достаточных признаках показывать, иначе `pending_review`;
+   - `require` — при достаточных признаках показывать, иначе исключить (`insufficient_cultural_significance` / `insufficient_tourism_value`).
+   - Для любого режима отсутствие достаточных независимых признаков не может компенсироваться названием объекта.
+   - Для `include` без достаточных признаков — `pending_review` (данные неполны), а не исключение.
+6. **Класс объекта** (`object_class`): берётся `default_class` подкатегории; признак охраны (heritage-тег, Wikidata P1435) переводит `tourism` → `both`, `unclassified` → `heritage`; тег `tourism=*` переводит `heritage` → `both`.
+7. **Приоритет** `size_priority` = `base_priority` подкатегории + бонусы (Wikipedia +0.5, признак охраны +0.5, качественное описание +0.3, Wikidata +0.2), максимум 5.0.
+8. Возврат `Classification(category, subcategory, object_class, decision, exclusion_reason, size_priority, legacy_type1, legacy_type2, evidence[], taxonomy_version)`.
+
+`evidence` — список записей `{rule, fact, source}` (какое правило и какой факт привели к решению). Сохраняется в БД (`classification_evidence`).
+
+### 5.4. Принятые решения по модели
+
+- **[РЕШЕНИЕ R-ENUM]** Enum `Type2` и колонки `type1`/`type2` **не расширяются и не удаляются**. Они — «устаревшие грубые типы» для обратной совместимости. Новая классификация хранится в строковых колонках `category` и `subcategory`. Каждая подкатегория в YAML указывает `legacy_type1`/`legacy_type2` (допустимые значения enum). Валидность проверяется **тестом** по списку значений (в `app/taxonomy.py` модуль `models` не импортируется — см. 10.3).
+- **[РЕШЕНИЕ R-PRIO]** Отдельное поле `priority` не создаётся: используется `size_priority`.
+- **[РЕШЕНИЕ R-REVIEW]** Отдельный флаг ручной проверки не создаётся: `pending_review` — это `excluded_from_map = true` + `exclusion_reason = 'pending_review'`.
+- **[РЕШЕНИЕ R-VIS]** Видимость определяется единым `VISIBLE_CONDITION` (5.9), а не одним флагом `excluded_from_map`.
+
+### 5.5. Категории и подкатегории (нормативная таблица)
+
+Колонки: `leg` — legacy `type1/type2`; `cls` — `default_class` (H — heritage, T — tourism, B — both); `sig` — режим значимости; `prio` — `base_priority`; `ord` — `match_order`.
+
+#### 5.5.0. Глобальный порядок проверки (`match_order`)
+
+Порядок решает проблему перекрытия: более частное правило обязано проверяться раньше более общего.
+
+| ord | Подкатегория | Перекрывает (проверяется раньше, чем…) |
+|---|---|---|
+| 10 | `locomotives_rolling_stock` | `military_heritage`, `monuments_memorials` |
+| 11 | `railway_museums` | `historical_museums`, `specialized_museums` |
+| 12 | `railway_stations_historic` | `historical_architecture` |
+| 13 | `railway_structures` | `historical_architecture`, `industrial_heritage` |
+| 20 | `circuses` | `theatres` |
+| 21 | `planetariums` | `specialized_museums` |
+| 22 | `zoos` | `tourist_attractions` |
+| 30 | `children_theatres` | `theatres` |
+| 31 | `concert_venues` | `theatres` |
+| 32 | `cultural_centres` | `theatres` |
+| 33 | `theatres` | — |
+| 40 | `military_heritage` | `military_memorials`, `monuments_memorials` |
+| 41 | `military_memorials` | `monuments_memorials` |
+| 42 | `memorial_plaques` | `monuments_memorials` |
+| 43 | `monuments_memorials` | — |
+| 50 | `archaeological_sites` | `historical_architecture` |
+| 51 | `industrial_heritage` | `historical_architecture` |
+| 52 | `historical_architecture` | — |
+| 60 | `art_museums` | `historical_museums`, `specialized_museums` |
+| 61 | `historical_museums` | `specialized_museums` |
+| 62 | `specialized_museums` | — (фолбэк музеев) |
+| 70 | `mosques` | `other_religious_sites` |
+| 71 | `synagogues` | `other_religious_sites` |
+| 72 | `buddhist_sites` | `other_religious_sites` |
+| 73 | `other_christian_sites` | `orthodox_churches` (конфессии, отличные от православной, проверяются раньше) |
+| 74 | `orthodox_churches` | `other_religious_sites` |
+| 75 | `other_religious_sites` | — (фолбэк) |
+| 80 | `protected_areas` | `natural_monuments` |
+| 81 | `natural_monuments` | `lakes`, `rivers`, `forests` |
+| 82 | `lakes` | — |
+| 83 | `rivers` | — |
+| 84 | `forests` | — |
+| 90 | `art_objects` | `tourist_attractions` |
+| 91 | `parks` | `tourist_attractions` |
+| 99 | `tourist_attractions` | — (последний фолбэк) |
+
+#### A. `heritage` — Историческое и культурное наследие
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Основные признаки (стартовые, уточняются аудитом тегов) |
+|---|---|---|---|---|---|---|
+| `military_heritage` | Военная техника-памятники | human/monument | H | review | 0.8 | `historic=aircraft|tank|military_vehicle`; `historic=memorial` или `memorial=war_memorial` + `name_regex` техники: `танк|т-34|бмп|бтр|гаубиц|пушк|катюш|истребител|самолет|вертолет|су-25|ис-3|зис-2|бм-13` (только выбор подкатегории) |
+| `military_memorials` | Военные мемориалы | human/monument | H | review | 1.5 | `memorial=war_memorial`, `memorial:conflict=*`, `war_memorial=yes`; название «Вечный огонь», «братская могила» — только для выбора подкатегории |
+| `memorial_plaques` | Мемориальные доски | human/monument | H | require | 0.6 | `memorial=plaque` |
+| `monuments_memorials` | Памятники и мемориалы | human/monument | H | review | 1.2 | `historic=monument|memorial|wayside_cross|wayside_shrine`, `memorial=statue|bust|stele|obelisk|stone|sculpture|tree`; `heritage=*` без иных совпадений |
+| `archaeological_sites` | Археологические памятники | human/architecture | H | require | 1.6 | `historic=archaeological_site|fort|tumulus` |
+| `industrial_heritage` | Промышленное наследие | human/architecture | H | review | 1.2 | `historic=factory|mine|mill|…`, `industrial=*` + `historic=*` |
+| `historical_architecture` | Историческая архитектура | human/architecture | H | review | 1.4 | `historic=building|castle|manor|ruins`, `building` + `heritage=*` / `start_date` ≤ порога |
+
+#### B. `railway_heritage` — Железнодорожное наследие (самостоятельная категория, R-004; `match_order` 10–13)
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Признаки |
+|---|---|---|---|---|---|---|
+| `locomotives_rolling_stock` | Паровозы и подвижной состав | human/monument | B | review | 2.0 | `historic=locomotive|wagon|railway_car`; `historic=memorial|monument` + `name_regex: "паровоз|локомотив|тепловоз|электровоз|фд\\d{2}|эр\\d|п36|(?<!\\w)танк-паровоз"` |
+| `railway_museums` | Железнодорожные музеи | human/museum | B | include | 2.2 | `tourism=museum` + `museum=railway`; `railway=museum`; `tourism=museum` + `name_regex: "железнодорожн|(?<!\\w)жд(?!\\w)|железной дороги"` **и** `name_not_regex: "железнодорожного района"` |
+| `railway_stations_historic` | Исторические вокзалы и станции | human/architecture | B | require | 2.0 | `building=train_station` или `railway=station` **только** при признаках: `heritage`/`historic`/`wikipedia`/`wikidata`/`start_date` ≤ 1950 |
+| `railway_structures` | Исторические ж/д сооружения | human/architecture | H | review | 1.2 | `historic=railway_*`, водонапорные башни, мосты, депо **с** `historic=*` |
+
+Обычная действующая станция без признаков значимости **не** получает `railway_heritage` (исключается как `insufficient_cultural_significance`).
+
+#### C. `cultural_institutions` — Культурные учреждения
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Признаки |
+|---|---|---|---|---|---|---|
+| `historical_museums` | Исторические и краеведческие музеи | human/museum | B | include | 1.8 | `tourism=museum` + `museum=history|local` или `name_regex: "краеведч|истори|район"` |
+| `art_museums` | Художественные музеи и галереи | human/museum | B | include | 1.8 | `tourism=gallery`; `tourism=museum` + `museum=art` или `name_regex: "художествен|картинн|галере"` |
+| `specialized_museums` | Специализированные и прочие музеи | human/museum | B | include | 1.4 | `tourism=museum` (фолбэк); `museum=*` прочие |
+| `theatres` | Театры | human/theater | T | include | 1.7 | `amenity=theatre` (после исключений 5.6 и частных подкатегорий) |
+| `children_theatres` | Детские театры и театры кукол | human/theater | T | include | 1.5 | `amenity=theatre` + `name_regex: "кукол|детск|юного зрителя|молодежн"` |
+| `concert_venues` | Филармонии и концертные залы | human/theater | T | include | 1.7 | `amenity=theatre|arts_centre` + `name_regex: "филармони|концертн|органн"` |
+| `cultural_centres` | Дворцы и дома культуры | human/theater | T | review | 0.9 | `name_regex: "дворец культуры|дом культуры|культурный центр"` |
+
+#### D. `religious_heritage` — Религиозные объекты (в интерфейсе одна группа; конфессия сохраняется подкатегорией)
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Признаки |
+|---|---|---|---|---|---|---|
+| `mosques` | Мечети | human/temple | H | review | 1.4 | `religion=muslim` |
+| `synagogues` | Синагоги | human/temple | H | review | 1.4 | `religion=jewish` |
+| `buddhist_sites` | Буддийские центры | human/temple | H | review | 1.2 | `religion=buddhist` |
+| `other_christian_sites` | Другие христианские объекты | human/temple | H | review | 1.0 | `denomination=catholic|baptist|lutheran|protestant|armenian_apostolic|…` |
+| `orthodox_churches` | Православные храмы и монастыри | human/temple | H | review | 1.4 | `religion=christian` + `denomination=orthodox|russian_orthodox`; без конфессии — `name_regex: "православ|собор|храм|часовн|монастыр"` (только выбор подкатегории) |
+| `other_religious_sites` | Прочие религиозные объекты | human/temple | H | review | 0.8 | остальные `amenity=place_of_worship` |
+
+#### E. `natural_heritage` — Природное наследие
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Признаки |
+|---|---|---|---|---|---|---|
+| `protected_areas` | Охраняемые территории | nature/reserve | B | require | 2.0 | `boundary=protected_area|national_park`, `leisure=nature_reserve` |
+| `natural_monuments` | Природные памятники | nature/historic_nature | B | require | 1.8 | `natural=spring|cave_entrance|peak` + признаки значимости |
+| `lakes`, `rivers`, `forests` | Озёра, реки, леса | nature/lake, river, forest | T | require | 1.0 | только при Wikipedia/Wikidata/охране; обычный водоём не значим |
+
+> **[РЕШЕНИЕ R-NATURE]** Текущие фильтры импорта (A-1) природных объектов **не загружают**. В этой итерации импорт расширяется только на `leisure=nature_reserve`, `boundary=protected_area`, `boundary=national_park`. Озёра, реки и леса остаются в таксономии, но массово не импортируются. Расширение — отдельное решение владельца.
+
+#### F. `tourism_recreation` — Туристические и рекреационные объекты
+
+| Подкатегория | Подпись | leg | cls | sig | prio | Признаки |
+|---|---|---|---|---|---|---|
+| `circuses` | Цирки | human/theater | T | include | 1.7 | `theatre:genre=circus`; `amenity=theatre` + `name_regex: "цирк"` |
+| `planetariums` | Планетарии | human/museum | T | include | 1.5 | `name_regex: "планетари"` + `tourism=museum` |
+| `zoos` | Зоопарки (целиком) | human/museum | T | include | 2.0 | `tourism=zoo` + `zoo` ≠ `petting_zoo`, объект-территория; не вольеры |
+| `art_objects` | Арт-объекты | human/monument | T | review | 0.6 | `tourism=artwork`; `tourism=attraction` + `attraction=statue|…` (замечание: `tourism=artwork` текущим импортом не загружается — подкатегория сработает только на `attraction=statue|…`) |
+| `parks` | Значимые парки | human/architecture | T | review | 1.0 | `leisure=park` **только** при Wikipedia/Wikidata (в текущий импорт не входит — не расширять без решения) |
+| `tourist_attractions` | Туристические достопримечательности | human/monument | T | **require** | 0.7 | `tourism=attraction` (фолбэк) |
+
+> **Изменение v2.2:** `tourist_attractions` переведены с `review` на `require`. Причина: реальные данные дают сотни неопознанных `tourism=attraction` («Солнышко», «Смайлик», «Деревья с рисунками», скамейки, «Воздушные шары» ×6), и режим `review` завалил бы владельца ручной проверкой. Без независимых признаков такие объекты исключаются (`insufficient_tourism_value`).
+
+**Обязательное толкование столбца `sig`:** `include` не означает безусловный показ. Объект всё равно обязан набрать минимальные признаки значимости по 5.7. Музей, театр, зоопарк или цирк не включается в карту только из-за OSM-тега/названия. Если признаки не набраны: `include` и `review` → `pending_review`; `require` → `insufficient_cultural_significance` / `insufficient_tourism_value`.
+
+### 5.6. Жёсткие исключения (`exclude_rules`, проверяются первыми)
+
+Каждое правило: `id`, `match`, `reason`, **`overridable` (true/false — может ли владелец снять исключение вручную, 8.3)**, необязательное `unless` (признаки, при которых правило не применяется, например `heritage_tag`, `wikipedia`).
+
+| id | Условие | Причина | overridable |
+|---|---|---|---|
+| `zoo_animal_or_enclosure` | `attraction=animal` | `individual_zoo_animal_or_enclosure` | false |
+| `amusement_ride` | `attraction=amusement_ride|roller_coaster|bumper_car|jet|carousel|swing|…` | `duplicate_or_component` | false |
+| `commercial_poi` | `tourism=attraction` + любой из ключей `shop`, `office`, `craft` | `unsupported_object_type` | false |
+| `bench` | `amenity=bench` | `unsupported_object_type` | false |
+| `path_or_road` | `highway=*` и **нет** `historic`/`memorial` (`tags: ["highway", "!historic", "!memorial"]`) | `unsupported_object_type` | false |
+| `school_or_kids_centre` | `amenity=arts_centre` + `name_regex: "школа искусств|детск|дом творчества|цдт|студия"` | `unsupported_object_type` | **true** |
+| `auditorium` | `amenity=theatre` + `name_regex: "актовый зал"` | `technical_infrastructure` | **true** |
+| `unnamed_or_broken` | отсутствует имя **и** нет Wikidata | `invalid_or_incomplete_data` | false |
+
+Жёсткие исключения не обходятся автоматической классификацией. Ручное снятие исключения допустимо **только** для правил с `overridable: true`, только после проверки исходных тегов и только с указанием подкатегории и основания (8.3); оно фиксируется в журнале аудита и никогда не отменяет R-001.
+
+### 5.7. Признаки значимости
+
+| Тип | Признак | Источник |
+|---|---|---|
+| **strong** | `heritage_tag` — любой из ключей `heritage`, `heritage:operator` (+ реестровые теги, подтверждённые аудитом) | OSM |
+| **strong** | `wikidata_heritage_status` — Wikidata P1435 | Wikidata (этап 3, опционально) |
+| **strong** | `wikipedia` — тег `wikipedia` или `wikipedia_url` | OSM / enrich |
+| **strong** | `wikidata` — собственный Q-идентификатор (из тега или сопоставления по координатам и имени, как в `enrich_osm`) | OSM / Wikidata |
+| **strong** | `quality_description` — описание прошло проверку 9.2 из `description:ru`, Wikipedia или Wikivoyage | enrich |
+| **strong** | `researched_ai_summary` — непустые `ai_summary` **и** `ai_summary_sources` (контракт `archive/` требует HTTPS-источников); только при `trust_researched_ai_summary: true` и выполнении 9.3 | БД |
+| weak | `subject_wikidata` (`subject:wikidata`, `memorial:subject`) | OSM |
+| weak | `historic_age` — `start_date` не позднее `historic_year_cutoff` | OSM |
+| weak | `wikivoyage` | enrich |
+| weak | `long_inscription` — `inscription` длиннее 80 символов | OSM |
+| weak | `official_website` — `website`/`contact:website` | OSM |
+| weak | **`mkrf_registry` — наличие `ref:mkrf_theaters` / `ref:mkrf_museums`; учитывается ТОЛЬКО для категории `cultural_institutions`** | OSM |
+
+Достаточно: `≥ min_strong` strong **или** `≥ min_weak` weak. Название, regex названия, тип учреждения и сам факт наличия строки в OSM не входят в счётчики. Для подкатегорий с `significance: include` действуют те же минимальные пороги.
+
+Признак `mkrf_registry` описан в YAML полем `only_categories: [cultural_institutions]`. Он признаёт, что учреждение состоит в реестре Минкультуры, но **не является признаком охраны/наследия**: ни `heritage_tag`, ни `object_class = heritage` из него не выводятся. Вместе с `official_website` он образует пару weak-признаков (`min_weak: 2`) и позволяет показать реальные музеи и театры без Wikipedia/Wikidata — иначе в Новосибирской выгрузке большинство из них было бы скрыто.
+
+`researched_ai_summary` учитывается как strong только если URL валидны (HTTPS), источники относятся именно к данному объекту, подтверждают заявленную значимость и summary прошёл проверку качества; непустого массива ссылок недостаточно.
+
+> **Поправка к начальной версии ТЗ.** Теги `ref:mkrf_theaters` / `ref:mkrf_museums` — реестры **учреждений** Минкультуры, а **не** реестр охраны объектов культурного наследия. Реестровые теги ОКН определяются по реальной статистике (`scripts/audit_tags.py`), а не по догадке.
+
+### 5.8. Реестр причин исключения
+
+`outside_railway_radius`, `unsupported_object_type`, `insufficient_cultural_significance`, `insufficient_tourism_value`, `duplicate_or_component`, `technical_infrastructure`, `individual_zoo_animal_or_enclosure`, `invalid_or_incomplete_data`, `manual_exclusion`, `pending_review`, `demo_data`.
+
+Любая причина в коде обязана быть в реестре YAML (тест 16.5).
+
+**Приоритет решений:** (1) R-001 `outside_railway_radius` — абсолютное географическое ограничение; (2) ручное исключение `manual_exclusion`; (3) ручная блокировка (`classification_locked`) сохраняет выбранные владельцем категорию/класс/решение, но не отменяет R-001; (4) жёсткие исключения 5.6; (5) автоматическая таксономия и значимость. `demo` — происхождение данных, а не причина исключения и не приоритет показа. `demo_data` оставлена в реестре только для совместимости; новые demo не получают эту причину автоматически.
+
+### 5.9. Условие видимости (единое, P-13, R-012)
+
+Определяется один раз в `app/queries.py` как `VISIBLE_CONDITION` и используется API, отчётами и SQL-проверками:
+
+```sql
+excluded_from_map = false
+AND classified_at IS NOT NULL
+AND railway_distance_checked_at IS NOT NULL
+AND railway_distance_m IS NOT NULL
+```
+
+- `railway_distance_checked_at IS NULL` означает **«расстояние ещё не считали»** (строка невидима, но не «вне радиуса»).
+- `railway_distance_checked_at IS NOT NULL AND railway_distance_m IS NULL` означает **«проверено, дальше радиуса»** (строка исключается с `outside_railway_radius`).
+- После миграции (раздел 7) все существующие строки невидимы, пока `classify_places` их не обработает. Это сознательное решение: лучше пустая карта, чем «грязный» показ. README обязан об этом предупреждать.
+
+---
+
+## 6. Пространственные правила (R-001)
+
+1. Источник значения — `settings.railway_radius_meters` (2500). `IMPORT_RADIUS_METERS` в `import_osm.py` читает его из конфигурации; CLI-аргумент `--radius-m` может переопределить для эксперимента.
+2. **`start_project.ps1`:** `[int]$RadiusMeters = 0`; значение 0 означает «не передавать флаг, использовать конфигурацию». Ненулевое значение передаётся как `--radius-m`. Обновить примеры в `README.md` (сейчас там «5 км» и `-RadiusMeters 3000`).
+3. **Измерение:** до ближайшей точки таблицы `raw_railway_points`, функцией `ST_DWithin(geography, geography, R)` (граница включается) и `ST_Distance` для самого расстояния. Приближённая арифметика широт/долгот запрещена.
+4. **Хранение:** `culture_place.railway_distance_m` (метры до ближайшей точки; `NULL` — дальше радиуса **или ещё не считалось** — различие даёт `railway_distance_checked_at`, 5.9) и `railway_distance_checked_at` (время расчёта). Заполняется `classify_places`; API расстояния на лету **не** вычисляет.
+5. **Эталонный запрос расстояния** (использует существующий индекс `(geom::geography)` на `raw_railway_points`):
+
+```sql
+UPDATE culture_place cp
+SET railway_distance_m = d.dist,
+    railway_distance_checked_at = now()
+FROM (
+    SELECT c.id,
+           (SELECT MIN(ST_Distance(c.geom, r.geom::geography))
+              FROM raw_railway_points r
+             WHERE ST_DWithin(c.geom, r.geom::geography, :radius_m)) AS dist
+      FROM culture_place c
+) d
+WHERE d.id = cp.id
+  AND (cp.railway_distance_checked_at IS NULL
+       OR cp.railway_distance_m IS DISTINCT FROM d.dist);
+```
+
+   Условие `IS DISTINCT FROM` обязательно: без него повторный запуск обновлял бы `railway_distance_checked_at` у всех строк и нарушал идемпотентность (P-7, 18.5).
+
+6. **Жёсткость:** `railway_distance_checked_at IS NOT NULL AND railway_distance_m IS NULL` ⇒ `excluded_from_map = true`, `exclusion_reason = 'outside_railway_radius'` **независимо от `classification_locked`**. Если расстояние снова ≤ радиуса, автоматическое исключение снимается **только** если причиной была именно `outside_railway_radius` и нет ручной блокировки с `manual_exclusion`.
+7. **Устаревшие строки:** выборка `osm_pois_near_railway` пересобирается при каждом запуске, а `culture_place` никогда не очищается (A-2, A-3). Поэтому строки, импортированные при радиусе 5000 м, **останутся** — их обязательно переклассифицирует `classify_places` (исключение с причиной, без удаления).
+8. **Ограничение:** расстояние считается от `representative_point` объекта до ближайшей точки `raw_railway_points`. Это не минимальное расстояние от любой точки полигона/линии объекта до железной дороги. Для крупных площадных объектов (заповедники, парки, территории) результат является приближением. В API и интерфейсе нельзя описывать его как расстояние до границы объекта.
+9. Повторная проверка при promote: `promote_selected_pois` продолжает брать кандидатов только из `osm_pois_near_railway`; финальную проверку делает `classify_places`, который **обязателен** как шаг пайплайна.
+10. **Шаг точек ЖД (новое, проверка на этапе 0b).** Расстояние считается до *точек*, а не до линии. Если точки на отдельных участках разрежены, реальный радиус до линии оказывается больше 2500 м (между двумя точками объект может лежать на заметном расстоянии от дороги, но близко к одной из них; и наоборот — объект рядом с линией, но между редкими точками, будет отброшен). `audit_tags.py` печатает распределение расстояний между соседними точками одного пути (`track_id`, порядок по `km, measure`): медиана, p95, максимум и число пропусков > 500 м. Если p95 > 1000 м — отчитаться владельцу. Решение (уплотнение точек/расчёт до линии `railway`) принимает владелец; радиус при этом не меняется.
+
+---
+
+## 7. Модель данных и миграции
+
+### 7.1. Новые колонки `culture_place`
+
+Все добавляются через `ensure_taxonomy_schema(engine)` (`ADD COLUMN IF NOT EXISTS`) **и** объявляются в `models.py` (для свежих БД).
+
+| Колонка | Тип | По умолчанию | Назначение |
+|---|---|---|---|
+| `category` | VARCHAR(48) NULL | — | id категории |
+| `subcategory` | VARCHAR(64) NULL | — | id подкатегории |
+| `object_class` | VARCHAR(16) NOT NULL | `'unclassified'` | heritage/tourism/both/unclassified |
+| `excluded_from_map` | BOOLEAN NOT NULL | `false` | флаг исключения (видимость определяет `VISIBLE_CONDITION`, 5.9) |
+| `exclusion_reason` | VARCHAR(48) NULL | — | причина (реестр 5.8) |
+| `classification_locked` | BOOLEAN NOT NULL | `false` | ручная блокировка автоперезаписи |
+| `classified_at` | TIMESTAMPTZ NULL | — | время первой/последней **смены** классификации; `NULL` = ещё не классифицировано (строка невидима) |
+| `taxonomy_version` | VARCHAR(16) NULL | — | версия YAML при классификации |
+| `classification_evidence` | JSON NULL | — | основания решения (5.3) |
+| `railway_distance_m` | DOUBLE PRECISION NULL | — | раздел 6 |
+| `railway_distance_checked_at` | TIMESTAMPTZ NULL | — | `NULL` = расстояние ещё не считали (5.9) |
+| `description_source` | VARCHAR(32) NULL | — | происхождение обычного описания: `osm_description_ru`/`wikipedia`/`wikidata`/`osm_description`/`wikivoyage`/`manual` |
+| `effective_description_source` | VARCHAR(32) NULL | — | какое поле реально выбрано как описание: `history`/`short_description`/`ai_summary`; `NULL` — подходящего описания нет |
+| `description_quality` | VARCHAR(24) NULL | — | качество эффективного описания (раздел 9); при его отсутствии — причина отказа первого непустого кандидата либо `empty` |
+| `description_checked_at` | TIMESTAMPTZ NULL | — | время проверки |
+| `origin` | VARCHAR(16) NOT NULL | `'osm'` | `osm`/`demo`/`manual` |
+
+### 7.2. Журнал аудита (новое в v2.2, R-014)
+
+Таблица `classification_audit_log` (`CREATE TABLE IF NOT EXISTS` в `ensure_taxonomy_schema`, модель `ClassificationAuditLog` в `models.py`):
+
+| Колонка | Тип | Назначение |
+|---|---|---|
+| `id` | SERIAL PK | |
+| `culture_place_id` | INTEGER NULL | ссылка на `culture_place.id` (без `ON DELETE CASCADE`; журнал переживает удаление) |
+| `osm_type`, `osm_id` | VARCHAR(16), BIGINT NULL | идентичность объекта |
+| `action` | VARCHAR(32) NOT NULL | `manual_include`, `manual_exclude`, `manual_set_category`, `manual_set_description`, `manual_unlock`, `auto_reclassify`, `auto_radius_flip` |
+| `actor` | VARCHAR(16) NOT NULL | `manual` / `classify` / `import` |
+| `old_value`, `new_value` | JSON NULL | снимок изменённых полей (до/после) |
+| `note` | TEXT NULL | комментарий владельца |
+| `created_at` | TIMESTAMPTZ NOT NULL DEFAULT now() | |
+
+Что пишется: **любое** ручное действие `manage_places` — всегда. Автоматика (`classify_places`) пишет только когда у **уже классифицированной** строки (`classified_at IS NOT NULL`) меняются `subcategory`, `excluded_from_map` или `exclusion_reason`, а также любое переключение по R-001. Первичная классификация в журнал не пишется (иначе тысячи шумовых строк).
+
+### 7.3. Правила миграции
+
+- Только аддитивные изменения. Существующие колонки не удалять и не менять тип.
+- `ensure_taxonomy_schema` вызывать: в `app/main.py` рядом с `ensure_osm_enrichment_schema`, во всех скриптах, где создаётся таблица, и в `init_data.py` **после** `create_all` (сейчас он её не вызывает — A-10).
+- Индексы: функциональный GIST для запросов карты и частичный индекс видимых строк:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_culture_place_geom_geometry
+    ON culture_place USING GIST ((geom::geometry));
+CREATE INDEX IF NOT EXISTS idx_culture_place_visible
+    ON culture_place (size_priority)
+    WHERE excluded_from_map = false AND classified_at IS NOT NULL
+      AND railway_distance_m IS NOT NULL;
+```
+
+- **Невидимость до классификации (R-012):** новые строки и все существующие после миграции имеют `classified_at IS NULL` ⇒ невидимы по `VISIBLE_CONDITION`. Карта будет **пустой, пока не выполнен `classify_places`** — README обязан это явно сказать; в `start_project.ps1` шаг классификации выполняется автоматически.
+- **Backfill `origin`:** (а) `origin = 'osm'` для строк с `osm_id IS NOT NULL`; (б) `origin = 'demo'` для строк, у которых `osm_id IS NULL` **и** `(name, координаты в пределах 1 м)` совпадают с записью списка `PLACES` из `scripts/init_data.py` (модуль безопасно импортируется — при импорте он ничего не исполняет); (в) прочие строки без `osm_id` **не помечаются автоматически**: попадают в отчёт `data/reports/unidentified_rows.csv`, а классификатор даёт им `pending_review` до решения владельца. Backfill выполняет `classify_places --backfill-origin` (идемпотентно). Новые демо-строки получают `origin='demo'` сразу при вставке в `init_data.py` (13.2).
+- **Резервная копия перед первым запуском** (описать в README): `docker compose exec db pg_dump -U transsib transsib > backup_before_taxonomy.sql`.
+- **Откат:** колонки аддитивны, возврат к старому коду безопасен; но старый API не знает о `excluded_from_map`/`classified_at` и покажет **все** строки. Это нужно явно указать в README.
+
+---
+
+## 8. Идемпотентность и ручные изменения (R-009)
+
+### 8.1. Изменения `promote_selected_pois` (`ON CONFLICT`)
+
+| Поле | Новое поведение при конфликте |
+|---|---|
+| `type1`, `type2` | обновлять **только** если `classification_locked = false` **и** `subcategory IS NULL` (классифицированные строки получают legacy-тип от классификатора) |
+| `name` | как сейчас, но не для `classification_locked = true` |
+| `wikidata_id` | `coalesce(excluded.wikidata_id, existing.wikidata_id)` (сейчас можно затереть `NULL`-ом) |
+| `short_description` | обновлять только если новое значение непустое и `description_source` существующей строки не `manual`; `NULL`/пустая строка не стирают имеющееся |
+| `description_source` | выставлять вместе с описанием |
+| `sources`, `geom` | как сейчас |
+| `size_priority`, `category`, `subcategory`, `object_class`, `excluded_from_map`, `exclusion_reason`, `classified_at`, `railway_distance_*`, `origin` | **не трогать** при конфликте (это зона `classify_places`) |
+| `ai_summary`, `ai_summary_sources`, `history` | **никогда** не писать |
+
+Для **новых** строк (INSERT): значения классификации заполняются результатом `classify()`, но `classified_at` и `railway_distance_*` остаются `NULL` (строка невидима до `classify_places`). Если классификатор возвращает жёсткое исключение с причиной `unsupported_object_type`, `technical_infrastructure`, `individual_zoo_animal_or_enclosure`, `duplicate_or_component` или `invalid_or_incomplete_data`, строка в `culture_place` **не создаётся** (сырые теги остаются в `osm_pois`, который никогда не очищается — P-4 соблюдается на уровне данных). Остальные исключения (`insufficient_*`, `pending_review`) создаются с флагом — прозрачность и обратимость. Для **существующих** строк эти исключения применяет `classify_places` (с записью причины, без удаления).
+
+### 8.2. `classify_places`
+
+- Все функции принимают `db`/`engine` параметром (а не берут глобальный `SessionLocal`), чтобы интеграционные тесты работали на `transsib_test` (16.6).
+- Порядок работы: (1) `ensure_taxonomy_schema`; (2) `--backfill-origin`; (3) расстояние до ЖД (6.5) — обновлять **только изменившиеся** строки (`WHERE checked_at IS NULL OR railway_distance_m IS DISTINCT FROM new`), чтобы повторный запуск не давал обновлений; (4) классификация строк `origin='osm'` по фактам из `osm_pois` (join по `osm_type, osm_id`); (5) отдельная ветка для `origin='demo'` (13.2); (6) эффективное описание (раздел 9); (7) применение с учётом блокировок; (8) журнал аудита (7.2).
+- Для строк с `classification_locked = true` не меняет `category`, `subcategory`, `object_class`, `excluded_from_map`, `exclusion_reason`, **кроме** жёсткого правила R-001. Строки `origin='demo'` обрабатываются отдельной веткой и не исключаются только из-за отсутствия OSM-классификации.
+- `classified_at` и `taxonomy_version` обновляются **только если результат классификации изменился** (или строка классифицируется впервые). Иначе повторный запуск не будет нулевым.
+- Ручное исключение (`manual_exclusion`) имеет приоритет над автоматической классификацией; ручная категория/подкатегория и ручное описание сохраняются.
+- При изменении taxonomy заблокированные строки не переклассифицируются автоматически; формируется отчёт о несовпадениях/устаревшей версии.
+- Изменяет только поля классификации, расстояния и качества описаний.
+- Режимы: `--dry-run` (по умолчанию для первого запуска), `--report`, `--recompute-descriptions`, `--backfill-origin`. Отчёт содержит: сводку по решениям/причинам/подкатегориям; **таблицу «подкатегория × решение (показ / pending_review / исключено)»**; гистограмму `size_priority` (демо — отдельной строкой); CSV `data/reports/classification_review.csv` со списком `pending_review`, отсортированным по приоритету; CSV `data/reports/unidentified_rows.csv`; список возможных дублей demo (13.3).
+- Пакетная обработка по 1000 строк; повторный запуск без изменений данных даёт нулевое число обновлённых строк.
+
+### 8.3. `scripts/manage_places.py` (для владельца)
+
+Команды:
+
+```
+list-pending [--limit N]
+exclude <osm_type> <osm_id> [--reason <причина>] [--note "<текст>"]
+include <osm_type> <osm_id> --subcategory <id> --note "<основание значимости>"
+set-category <osm_type> <osm_id> <subcategory> [--note "<текст>"]
+set-description <osm_type> <osm_id> "<текст>"
+unlock <osm_type> <osm_id>
+apply-decisions <файл.csv>      # массовое применение решений из classification_review.csv
+```
+
+Правила:
+- Любое ручное действие ставит `classification_locked = true` (для описания — `description_source = 'manual'`) и **всегда** пишется в журнал аудита (7.2).
+- `pending_review` всегда скрыт из публичного API/карты до явной проверки и ручного решения владельца.
+- `include` **обязательно** принимает `--subcategory` и `--note` (основание значимости). Для объекта вне радиуса отклоняется (R-001). Для объекта под жёстким исключением разрешён **только** если у сработавшего правила `overridable: true` (5.6); иначе команда завершается ошибкой с названием правила. Команда никогда молча не снимает жёсткие исключения.
+- `apply-decisions <csv>`: столбцы `osm_type, osm_id, action (include|exclude|set-category), subcategory, note`. Применяется целиком в одной транзакции: при любой ошибке строки/правила откатывается всё и печатается номер строки. Все ограничения предыдущего пункта действуют для каждой строки. Обязателен режим `--dry-run`.
+- `set-description` не проходит проверку длины 9.2 (решение владельца), но пустой текст отклоняется; качество такого описания — `ok_manual`.
+
+---
+
+## 9. Описания и «эффективное описание» (R-002, R-013, P-14)
+
+### 9.1. Источник и происхождение
+
+В `_culture_place_row` сохранять `description_source` в том же порядке приоритета, что и сейчас (A-5). Порядок приоритета не менять. `description_source` описывает происхождение обычного описания (`short_description`) и не используется для обозначения AI-summary. Ручной источник имеет значение `manual`.
+
+### 9.2. Проверка качества `assess_description(text, name, cfg, trusted=False)`
+
+Результат — одно из значений: `ok`, `ok_ai_summary`, `ok_manual`, `empty`, `too_short`, `too_few_words`, `placeholder`, `same_as_name`, `not_russian`.
+
+Проверки по порядку:
+1. После нормализации пробелов пусто → `empty`.
+2. Совпадает с названием (регистр и пунктуация не учитываются) или состоит из названия и 1–2 слов → `same_as_name`.
+3. Совпадает с шаблоном заглушки из `placeholder_patterns` (например, «Музей в Омске», «Церковь», «Памятник города …») → `placeholder`.
+4. Длина < `min_chars` → `too_short`; слов < `min_words` → `too_few_words`.
+5. Доля кириллицы среди букв < `min_cyrillic_ratio` → `not_russian`.
+6. Для `trusted=True` (ручное описание владельца) проверки 3–5 пропускаются; результат `ok_manual`.
+
+Пороги 50 / 6 / 0.5 — стартовые, уточняются по распределению в реальных данных (`classify_places --report`).
+
+### 9.3. Эффективное описание — алгоритм `pick_effective_description`
+
+Это **единственное** место, где решается, какой текст считается описанием объекта.
+
+Кандидаты проверяются **в порядке `history` → `short_description` → `ai_summary`**; первый кандидат, прошедший проверку, становится эффективным:
+
+1. `history`: непустой и `assess_description` → `ok` (в т. ч. не считается качественным автоматически).
+2. `short_description`: непустой и `assess_description` → `ok` (или `ok_manual` при `description_source = 'manual'`).
+3. `ai_summary`: допускается только если одновременно: `accept_ai_summary: true`, `trust_researched_ai_summary: true`, формальная проверка источников пройдена (непустой список; у каждого элемента ровно поля `url, title, publisher, accessed_at`; `url` — валидный HTTPS без логина/пароля) и сам текст прошёл `assess_description` (результат `ok_ai_summary`).
+
+Если подходящего кандидата нет: `effective_description_source = NULL`, `description_quality` = причина отказа первого непустого кандидата (или `empty`).
+
+Результат записывается в `effective_description_source` и `description_quality`. `ai_summary` **никогда** не копируется в `short_description` и не перезаписывает его; поля `ai_summary`, `ai_summary_sources` классификатором и OSM-импортом не изменяются — их заполняет отдельный исследовательский процесс (`archive/`).
+
+Граница машинной и смысловой проверки: код проверяет только формальные условия (выше). Смысловые условия — источники относятся именно к объекту и подтверждают существенные факты — обеспечиваются процессом исследования: импортёр `archive/` принимает только статус `ready` с источниками. Копилот **не** должен пытаться «оценивать» достоверность `ai_summary` сам. `ai_summary` — strong-признак значимости (5.7) лишь при выполнении всех условий этого пункта; если источники подтверждают лишь существование/адрес объекта, summary может быть описанием, но значимости не доказывает (такое различие в данных `archive/` не хранится, поэтому по умолчанию `researched_ai_summary` считается strong **только** для подкатегорий, где владелец включил это флагом `trust_ai_summary_as_evidence: true` в YAML; по умолчанию флаг выключен).
+
+### 9.4. Использование в API и на фронтенде
+
+- API отдаёт поле **`effective_description`** (текст, выбранный по 9.3) и `effective_description_source`. Фронтенд показывает **только** его (P-14). Прежний порядок выбора в `getPlaceDescription` удаляется (11.7).
+- Источники `ai_summary_sources` показываются, **только если** `effective_description_source = 'ai_summary'`.
+- Фильтр зума (10.2, п. 2) применяется к тому же `effective_description_source IS NOT NULL` — карточка не может показать заглушку там, где фильтр пропустил объект из-за хорошего `ai_summary`.
+- `description_quality` пересчитывается в `classify_places` (в том числе после запуска архивного импортёра — это написать в `README.md`: `docker compose exec backend python -m scripts.classify_places --recompute-descriptions`).
+
+---
+
+## 10. API
+
+### 10.1. `GET /api/culture_places`
+
+| Параметр | Тип | Поведение |
+|---|---|---|
+| `bbox` | `minLon,minLat,maxLon,maxLat` | обязателен; валидация (ошибка → HTTP 422, не 500); фильтр по `ST_Within((geom::geometry), envelope)` на функциональном индексе |
+| `zoom` | int 0–22, необязательный | если задан — применяются правила 10.2; если нет — только `VISIBLE_CONDITION` (совместимость) |
+| `category`, `subcategory`, `object_class` | списки | фильтры новой классификации |
+| `type1`, `type2` | списки | **реализовать** (сейчас объявлены, но игнорируются) как фильтры по legacy-колонкам |
+| `limit` | int, по умолчанию 5000 | при усечении отдавать заголовки `X-Truncated: true`, `X-Total-Count` и `X-Returned-Count`; сортировка детерминированная: `size_priority DESC`, затем `id`; не молча отбрасывать остаток |
+
+Всегда: `VISIBLE_CONDITION` (5.9); дополнительно возвращать `origin`. Для `origin='demo'` допускается `category=NULL`, `subcategory=NULL`, `object_class='unclassified'`; такие строки не считаются нарушением таксономии, но обязаны пройти радиус и zoom-фильтр описаний.
+
+### 10.2. Правила видимости по зуму
+
+1. Приоритетный порог: по `priority_tiers` взять `min_priority` для текущего `zoom` → `size_priority >= min_priority`. `max_zoom` включителен, следующий ярус начинается с `max_zoom + 1`.
+2. При `zoom >= description_required_from_zoom` (по умолчанию 11): `effective_description_source IS NOT NULL` и `description_quality IN ('ok','ok_ai_summary','ok_manual')`. Если описания нет/оно не прошло проверку, объект на этом зуме не отдаётся.
+3. На зумах ниже 11 отсутствие описания не блокирует объект, но приоритетные пороги продолжают действовать. Порог 11 после калибровки можно изменить только отдельным решением владельца.
+4. **Demo и калибровка (новое).** Стартовый зум карты равен 6 ⇒ действует ярус `min_priority = 2.5`. Ручные `size_priority` demo-строк достигают 3.0 (опера, Чаны, зоопарк, крепость), поэтому на стартовом экране могут доминировать демо-метки. `[ПРЕДЛОЖЕНИЕ]` настройка `settings.demo.priority_cap` (по умолчанию `null`): если задана, то при фильтрации используется `LEAST(size_priority, cap)` для `origin='demo'`. Отчёт `--report` показывает демо отдельной гистограммой; решение принимает владелец при калибровке.
+
+### 10.3. Контракт ответа (R-011) и маркер
+
+Существующие поля `CulturePlaceOut` не удалять и не менять типы (включая `type1: str`, `type2: str`, `marker`). **Добавить необязательные поля:** `category`, `subcategory`, `object_class`, `description_source`, `effective_description`, `effective_description_source`, `origin`.
+
+**Маркер и циклический импорт.** `app/taxonomy.py` не импортирует `app.models`; `app/models.py` не импортирует `app.taxonomy`. Свойство `CulturePlace.marker` остаётся как есть (legacy-фолбэк по `MARKER_STYLE`). Итоговый маркер собирает функция `build_marker(taxonomy, subcategory, legacy_marker)` в `app/queries.py` (там можно импортировать и модели, и таксономию): цвет/иконка/форма берутся из YAML (`marker`) для подкатегории; для строк без подкатегории — `legacy_marker`.
+
+### 10.4. `GET /api/taxonomy` (новый)
+
+Возвращает: `version`, `description_required_from_zoom`, `priority_tiers`, `object_classes` (id + подпись), `categories` (id, подпись, цвет, иконка, `subcategories` с подписями), а также настройки demo, необходимые фронтенду. Источник — `app/taxonomy.py`. Фронтенд строит легенду и подписи **только** из него.
+
+### 10.5. Ошибки и деградация
+
+- Если `/api/taxonomy` недоступен или вернул некорректную схему, фронтенд показывает понятное сообщение об ошибке загрузки легенды и не подменяет таксономию самодельными словарями. Legacy fallback допустим только для обратной совместимости.
+- При усечении ответа `/api/culture_places` фронтенд сообщает, что показана неполная выборка.
+
+### 10.6. Производительность
+
+- Убрать N+1: координаты — одним запросом (`select(CulturePlace, ST_X(geom_as_geom), ST_Y(geom_as_geom))`).
+- Фильтры применять в SQL до сериализации; логику сборки запроса вынести в `app/queries.py` (чистая функция, тестируется без импорта `main.py` и без БД).
+- `effective_description` выбирается в SQL выражением `CASE effective_description_source WHEN 'history' THEN history WHEN 'short_description' THEN short_description WHEN 'ai_summary' THEN ai_summary END`.
+- Расстояния до железной дороги в API **не** считать (6.4).
+
+---
+
+## 11. Фронтенд
+
+1. **Загрузка объектов:** добавить `zoom=${map.getZoom()}` в запрос. Подписку `moveend` оставить единственной для загрузки объектов (Leaflet вызывает её и после зума); `zoomend` остаётся для `loadRailway`.
+2. Добавить **debounce ~250 мс** и **отмену устаревшего запроса** (`AbortController`), чтобы быстрые зумы не приводили к перерисовке старым ответом.
+3. Удалить из `app.js` словари `type1Labels`, `type2Labels`, `type2DescriptionLabels`. Загружать `/api/taxonomy` до `initLegend()`. Легенда: блок «Класс» (наследие / туризм / оба), блок «Категория» (по категориям, подкатегории — раскрываемо или отдельным списком). Заголовки «Тип 1 (Nature/Artificial)» и «Тип 2 (Categories)» в `index.html` заменить.
+4. Фильтры легенды (`hiddenTypes`) обобщить на `category` и `object_class`; логика `toggleFilter`/`renderMarkers` сохраняется.
+5. Карточка: показывать подпись подкатегории и класс; для demo явно показывать метку «Демонстрационный объект»; для AI-summary показывать источники и отличать его от обычного описания; сохранить `escapeHtml`, `safeHttpUrl`.
+6. Кластеризация (`L.markerClusterGroup`), подсветка поиска, `flyTo`, боковой список — **без изменений**.
+7. **Описание в карточке — только `effective_description`.** Функцию `getPlaceDescription` заменить: если `effective_description` непусто — показывать его; иначе (возможно только на зуме ниже порога) показывать подпись подкатегории **отдельным нейтральным элементом**, не оформляя её как описание. Функция `getAiSummarySourcesHtml` — выводить источники, только когда `effective_description_source === 'ai_summary'` (условие «есть history/short_description» убрать).
+8. Ручная проверка (чек-лист в отчёте этапа): исключённые объекты не видны; при зуме ≥ порога нет объектов без описания; при быстром зуме нет «мигания» старыми данными; легенда соответствует `/api/taxonomy`; текст в карточке совпадает с `effective_description` из ответа API; на пустой (не классифицированной) БД карта пуста, а не показывает всё.
+9. **Известное ограничение (зафиксировать в README, не исправлять в этой итерации):** поиск по названию и боковой список работают только по объектам, загруженным для текущего bbox/зума; скрытые на этом зуме объекты не находятся.
+
+---
+
+## 12. Внешние источники и правила поиска (R-008)
+
+Это «свод правил для поиска в WWW»: **код получает данные только из следующих источников и только по заданным правилам**. Произвольный веб-скрейпинг и подключение новых источников без согласования с владельцем запрещены.
+
+| Уровень | Источник | Как используется | Где в коде |
+|---|---|---|---|
+| 1 | OpenStreetMap (PBF Geofabrik) | кандидаты и теги по белому списку (5.5, `OSM_TAG_FILTERS`) | `import_osm_pbf.py` |
+| 1 | Wikidata (SPARQL и `wbgetentities`) | Q-идентификатор, подпись/описание, фото; признак охраны P1435 (опционально) | `enrich_osm.py` |
+| 2 | Wikipedia, Wikivoyage (MediaWiki API) | краткое вступление и ссылка-источник; **только точные статьи** по тегу `wikipedia`/`wikivoyage` или sitelink Wikidata объекта | `enrich_osm.py` |
+| 2 | Wikimedia Commons | фото и атрибуция | `enrich_osm.py` |
+| 1–3 | Официальные сайты, региональные порталы | **не парсятся кодом**; попадают в БД только через процесс исследования (`archive/`): внешний агент → JSONL с источниками → проверка → `ai_summary` | вне кода |
+
+**Правила:**
+1. Целевой поиск по таксономии: сначала белый список тегов (OSM), потом обогащение только отобранных объектов (`osm_pois_near_railway`). Запросы к Wikidata/Wikipedia **не** делаются для объектов вне радиуса.
+2. Сохранять уровень источника описания (`description_source`) и ссылки (`sources`); не заменять подтверждённое описание менее надёжным.
+3. Лимиты внешних сервисов сохранить: интервал ≥ 1 с, учёт `Retry-After`, `User-Agent` проекта (реализовано в `_request_json` — не ослаблять).
+4. Противоречия: данные более высокого уровня приоритетнее; при неразрешимом противоречии — `pending_review`, догадки не подставлять.
+5. Нет подтверждения — нет вывода: статус наследия и значимость **не** выводятся из названия.
+6. Расширение `OSM_TAG_FILTERS` (этап 3; решение D-5): добавить `nwr/building=train_station`, `nwr/railway=museum`, `nwr/leisure=nature_reserve`, `nwr/boundary=protected_area`, `nwr/boundary=national_park`. Не импортировать все обычные `railway=station`; исторические станции отбирать по `building=train_station` и/или дополнительным историческим/наследным признакам. Узкий фильтр `railway=station` допустим только если он не приводит к массовой загрузке обычных остановок. Тесты `test_osm_import.py` не должны ломаться. Скачанные PBF кэшируются в `data/osm/`, но фильтрация и импорт запускаются заново.
+7. Запрос P1435 (признак охраны) добавляется в `_metadata_query` как `OPTIONAL` + `SAMPLE`, результат хранится в новой колонке `osm_pois.wikidata_heritage_status` (VARCHAR, отдельная `ensure_*`-совместимая функция, **не** меняя сигнатуру `ensure_osm_enrichment_schema`). Пункт опциональный.
+
+---
+
+## 13. Существующие и демонстрационные данные
+
+1. **Не удалять** ни одной строки. Миграция идёт через backfill и `classify_places`.
+2. **Демо-данные** (A-10, решение D-3): сохранить все **40** строк (4 блока по 10) и оставить их доступными на карте как демонстрационный набор. Проставлять `origin = 'demo'` **в самом `init_data.py` при вставке** (колонка существует, потому что `init_data.py` вызывает `ensure_taxonomy_schema` после `create_all`) и backfill по 7.3(б) для уже существующих БД. Исправить неверное сообщение «50 местами» на «40». Не исключать demo автоматически только из-за отсутствия `osm_type`/`osm_id`. R-001 обязателен и для demo: объект дальше 2500 м исключается. Демо-объекты визуально/текстово помечены («Демонстрационный объект»), не выдаются за проверенные реальные POI и не получают статус наследия/значимости. Для demo не применяется правило «нет подкатегории → `unsupported_object_type`»: ветка `origin='demo'` не присваивает категорию/подкатегорию, `object_class='unclassified'`. API отдаёт `origin`. На зуме ≥ 11 к demo применяется то же требование качественного эффективного описания — **ожидаемое последствие:** большинство демо-описаний («Установлен в 1960-х.») короче порога и на крупном зуме исчезнут; владельца об этом нужно уведомить в отчёте этапа 2. `init_data.py` изменяется минимально: `origin='demo'`, вызов `ensure_taxonomy_schema`, исправление сообщения; содержимое, координаты и количество строк не меняются.
+3. **Дубли demo и реальных объектов** `[ПРЕДЛОЖЕНИЕ D-3a]`. Часть демо (оперный театр, зоопарк, краеведческий музей Новосибирска и др.) дублирует реальные OSM-объекты, и на карте могут появиться две метки на одно место. Отчёт этапа 2 перечисляет пары «demo ↔ OSM» (расстояние ≤ 300 м **и** сходство названий ≥ 0.8 по `difflib`, как в `enrich_osm`, либо совпадение `wikidata_id`). Настройка `settings.demo.hide_duplicates` (по умолчанию `false`): при `true` дубль demo получает `excluded_from_map = true`, `exclusion_reason = 'duplicate_or_component'`, но **не удаляется**. Включение — только по решению владельца.
+4. Строки `origin = 'osm'`, импортированные при радиусе 5000 м, обрабатываются по 6.7. Demo не обходят географическое ограничение и не считаются доказательством значимости.
+5. Строки с `ai_summary` (Новосибирск) сохраняют его без изменений.
+6. Строки без `osm_id`, не распознанные как demo, — отчёт `unidentified_rows.csv` и `pending_review` до решения владельца (7.3(в)).
+
+---
+
+## 14. Запреты
+
+**Архитектура (без согласования запрещено):**
+1. Переписывать импорт OSM или заменять PostGIS.
+2. Менять/расширять PostgreSQL ENUM `Type2` или удалять поля.
+3. Подключать Alembic или иной мигратор (принят паттерн `ensure_*`).
+4. Менять `archive/`, `start_project.ps1` шагами, не описанными в этом документе; удалять/обходить его; очищать или пересоздавать БД/таблицы/тома; выполнять `DELETE`/`TRUNCATE` для существующих данных без отдельного подтверждения владельца.
+5. Ломать контракт `/api/culture_places` (R-011).
+6. Переписывать фронтенд целиком.
+7. Добавлять зависимости, кроме `PyYAML` (точная версия, например `PyYAML==6.0.2`; использовать только `yaml.safe_load`).
+8. Менять поведение `map_osm_tags` и существующих тестов.
+9. Импортировать `app.models` из `app.taxonomy` и `app.taxonomy` из `app.models`.
+10. Запускать интеграционные тесты на рабочей БД `transsib`.
+
+**Данные:**
+1. Автоматически показывать все `monument`.
+2. Считать каждый `tourism=attraction` значимым; каждое историческое здание — наследием; каждую станцию — историческим объектом.
+3. Присваивать статус наследия или значимость по названию.
+4. Показывать/включать объекты дальше 2500 м.
+5. Затирать ручные решения и ручные описания.
+6. Копировать `ai_summary` в `short_description`.
+7. Физически удалять исключённые объекты и их OSM-теги (`osm_pois` не очищать).
+8. Скрейпить сторонние сайты кодом.
+9. Выбирать текст описания на фронтенде мимо `effective_description`.
+10. Считать `ref:mkrf_*` признаком охраны/наследия.
+
+---
+
+## 15. Этапы реализации
+
+Каждый этап — отдельный коммит(ы) и отчёт (19.4). К следующему этапу переходить только после отметки владельца. До начала изменений: ветка `feature/taxonomy` от `data`, тег `backup-before-taxonomy`, резервная копия БД. Запрещено очищать/пересоздавать БД, таблицы, Docker volumes или выполнять массовый DELETE/TRUNCATE без отдельного явного подтверждения владельца.
+
+### Этап 0b. Аудит реальных тегов и базовой линии (только чтение)
+**Сделать:**
+1. `scripts/audit_tags.py` — по `osm_pois` (и `osm_pois_near_railway`) вывести частоты значений для ключей: `historic`, `memorial`, `tourism`, `amenity`, `building`, `heritage*`, `ref:*`, `railway`, `museum`, `religion`, `denomination`, `attraction`, `theatre:genre`; топ-50 имён с `name_regex` железнодорожной тематики; число объектов по радиусам 2500/5000.
+2. **Шаг точек ЖД** (6.10): медиана/p95/максимум расстояний между соседними точками одного `track_id`, число пропусков > 500 м.
+3. **Базовая линия тестов:** `python -m unittest discover -s tests` — записать результат; проверить, запускаются ли тесты `archive/tests` (A-13), и зафиксировать фактический результат (скорее всего — нет).
+4. Создать ветку и тег (см. выше).
+**Готово, когда:** отчёт сохранён в `data/reports/tag_audit.md`; теги в 5.5/5.7 сверены с реальностью, расхождения перечислены; в отчёте указаны результаты п. 2–3.
+**Изменения БД и кода приложения:** нет.
+
+### Этап 1. Чистые модули: таксономия, классификатор, качество описаний
+**Сделать:** `config/taxonomy.yaml` (по 5.1–5.9 и аудиту 0b; с `match_order`, `overridable`, `marker`), `app/taxonomy.py` (загрузка, строгая валидация схемы YAML, `normalize_name`, язык условий, `classify`), `app/description_quality.py` (`assess_description`, `pick_effective_description`); добавить `PyYAML` в `requirements.txt`; тесты 16.1–16.3, 16.5, `tests/test_archive_contract.py`.
+**Готово, когда:** все тесты зелёные, существующие тесты не изменены и зелёные; в коде нет обращений к БД; `app.taxonomy` не импортирует `app.models`.
+**Не трогать:** `models.py`, API, скрипты.
+
+### Этап 2. Схема БД и `classify_places`
+**Сделать:** колонки 7.1 и таблица аудита 7.2 (`models.py` + `ensure_taxonomy_schema`), индексы, вызов `ensure_*` в `init_data.py`; `scripts/classify_places.py` (расстояние 6, классификация, эффективное описание, `--dry-run`, `--report`, `--backfill-origin`); `scripts/manage_places.py`; demo 13.2–13.3; радиус из конфигурации (6.1–6.2); `VISIBLE_CONDITION` в `app/queries.py` (минимальная версия); интеграционные тесты на `transsib_test`.
+**Готово, когда:** `--dry-run` на копии БД печатает сводку; повторный запуск даёт 0 обновлений; SQL 18.1, 18.1b, 18.2 возвращают 0; владелец получил: гистограмму `size_priority`, таблицу «подкатегория × решение», списки `classification_review.csv`, `unidentified_rows.csv`, пары дублей demo.
+**Гейт согласования (обязателен):** владелец утверждает таблицу «подкатегория × решение» из `--dry-run` до первого боевого прогона и до этапа 3. Порог описания 11 не менять без отдельного согласования; решения D-3a и `demo.priority_cap` принимаются здесь.
+
+### Этап 3. Интеграция в импорт
+**Сделать:** изменения `promote_selected_pois` и `_culture_place_row` (8.1, `description_source`), `OSM_TAG_FILTERS` (12.6), опционально P1435 (12.7), шаг `classify_places` в `start_project.ps1` (шагов станет 8; сохранить BOM), актуализация `README.md`.
+**Готово, когда:** тесты повторного импорта 16.4 зелёные; сухой прогон на копии БД не меняет данные ручных строк; тесты подтверждают перенос объектов по цепочке PBF → `osm_pois` → `osm_pois_near_railway` → `culture_place` для railway museums, исторических вокзалов и охраняемых территорий; повторный запуск не создаёт дублей.
+
+### Этап 4. API
+**Сделать:** `app/queries.py` (полная версия: фильтры, зум, `effective_description`, `build_marker`), обновление `/api/culture_places` (10.1–10.3, 10.5), `/api/taxonomy`, `schemas.py` (только добавление полей).
+**Готово, когда:** тесты `test_map_queries.py` и контрактный тест зелёные; N+1 отсутствует (число SQL-запросов на вызов не зависит от числа строк).
+
+### Этап 5. Фронтенд
+**Сделать:** раздел 11.
+**Готово, когда:** чек-лист 11.8 пройден (скриншоты/описание проверки в отчёте).
+
+### Этап 6. Приёмка
+**Сделать:** `scripts/audit_map_quality.py` (SQL раздела 18), итоговый отчёт, обновлённый `README.md` (команды для владельца, резервное копирование, откат, пустая карта до классификации, что делать после архивного импорта, ограничение поиска).
+**Готово, когда:** все критерии раздела 18 выполнены или невыполненные перечислены с причинами.
+
+---
+
+## 16. Тесты (`unittest`, как в проекте)
+
+Юнит-тесты не должны требовать БД и не должны импортировать `app.main`.
+
+### 16.1. Язык условий и валидация YAML
+Операторы `k=v`, `v1|v2`, `k`, `!k`; `name_regex`/`name_not_regex`; нормализация (`ё→е`, регистр); короткий токен без границ слова → ошибка; неизвестный ключ в YAML → ошибка; повтор id → ошибка; повтор `match_order` → ошибка; нарушен порядок «частное раньше общего» (5.5.0) → ошибка; несуществующая причина исключения → ошибка; `legacy_type1/2` вне списка допустимых значений enum → ошибка; у `exclude_rules` отсутствует `overridable` → ошибка; у подкатегории нет `marker.shape` → ошибка.
+
+### 16.2. Классификация (реальные примеры проекта)
+
+| Вход | Ожидание |
+|---|---|
+| `historic=locomotive` | `railway_heritage/locomotives_rolling_stock` |
+| `historic=memorial`, имя «Паровоз "Проворный"» | `locomotives_rolling_stock` (не `monuments_memorials`) |
+| `historic=memorial`, имя «ФД20-2610» | `locomotives_rolling_stock` |
+| `tourism=museum`, имя «Музей Западно-Сибирской железной дороги» | подкатегория `railway_museums`; показ только при независимых признаках значимости (5.7) |
+| `tourism=museum`, имя «Музей Железнодорожного района» | **не** `railway_museums` (район, а не железная дорога) |
+| `tourism=museum`, имя с «Рождественский»/«Вождь» (содержит «жд» внутри слова) | **не** `railway_museums` (границы слова) |
+| `building=train_station` без признаков значимости | исключён, `insufficient_cultural_significance` |
+| `building=train_station` + `heritage` или Wikipedia | `railway_stations_historic`, `object_class = both` |
+| `historic=memorial`, только имя | `pending_review` |
+| `historic=memorial` + `wikipedia` | `monuments_memorials`; показ |
+| `memorial=plaque` без признаков | исключён (`insufficient_cultural_significance`) |
+| `memorial=plaque` + `historic=memorial` | `memorial_plaques` (не `monuments_memorials`) — проверка порядка |
+| `memorial=war_memorial` + `historic=memorial` | `military_memorials` (не `monuments_memorials`) — проверка порядка |
+| `attraction=animal` (тигр, куропатка) | исключён, `individual_zoo_animal_or_enclosure` |
+| `attraction=animal` + `natural=water` («Белые медведи») | исключён; **не** озеро |
+| `tourism=attraction` + `office=logistics` («Упак Трейдинг») | исключён, `unsupported_object_type` |
+| `tourism=attraction`, «Воздушные шары» (оператор, телефон, без `shop`) | исключён, `insufficient_tourism_value` (`tourist_attractions` — `require`) |
+| `attraction=roller_coaster` | исключён, `duplicate_or_component` |
+| `amenity=theatre` + `theatre:genre=circus` | `circuses` (не `theatres`) — проверка порядка |
+| `amenity=theatre`, «Театр кукол» | `children_theatres` (не `theatres`) — проверка порядка |
+| `amenity=theatre`, «Актовый зал НГПУ» | исключён, `technical_infrastructure` |
+| `amenity=arts_centre`, «Детская школа искусств №4» | исключён, `unsupported_object_type` |
+| `amenity=theatre`, «Новосибирская государственная филармония» | `concert_venues`; название не доказательство значимости |
+| `amenity=theatre`, «Дворец культуры Юность», без признаков | `pending_review` |
+| `amenity=place_of_worship`, `religion=muslim` | `mosques` |
+| `place_of_worship`, `denomination=baptist` | `other_christian_sites` (не `orthodox_churches`) — проверка порядка |
+| `place_of_worship`, `religion=christian`, без конфессии, имя «Часовня …» | `orthodox_churches` по имени, но значимость — только по признакам |
+| `tourism=zoo` | `zoos` |
+| объект без `name` и без Wikidata | `invalid_or_incomplete_data` |
+| `highway=footway` + `tourism=attraction` | исключён (`path_or_road`) |
+| `highway=footway` + `historic=memorial` | **не** исключён правилом `path_or_road` |
+| `tourism=museum` + `website` + `ref:mkrf_museums` (без Wikipedia/Wikidata) | подкатегория по типу; два weak-признака ⇒ показ |
+| `historic=memorial` + `website` + `ref:mkrf_museums` | `mkrf_registry` **не** учитывается (категория не `cultural_institutions`) |
+
+Дополнительно: класс объекта (паровоз-памятник → `both`; планетарий без охраны → `tourism`; памятник с `heritage` → `heritage`/`both`; `mkrf_registry` **не** даёт `heritage`); приоритет растёт с Wikipedia/охраной; `classify` детерминирован. Отрицательные тесты: одно только название «Музей…», «Филармония…», «Цирк…», «Памятник…» без независимых признаков не даёт показ; `significance: include` без подтверждения не обходит 5.7; имя может выбрать подкатегорию, но не значимость/класс наследия.
+
+### 16.3. Описания
+`None`; `""`; `"   "`; «Музей в Омске»; «Церковь»; текст = названию; 20 символов; 60 символов, но 3 слова; английское Wikidata-описание; содержательное русское описание (≥ 50 символов, ≥ 6 слов); ручное описание владельца (`ok_manual`). **`pick_effective_description`:** (а) качественный `history` побеждает; (б) плохой `history` + хороший `short_description` ⇒ `short_description`; (в) плохие `history`/`short_description` + `ai_summary` с валидными HTTPS-источниками ⇒ `ai_summary`, `ok_ai_summary`; (г) то же без источников / с невалидными URL / с лишними полями источника ⇒ эффективного нет; (д) все плохие ⇒ `NULL` и причина первого непустого; (е) `ai_summary` **не** копируется в `short_description`; (ж) при `accept_ai_summary: false` ai_summary не используется.
+
+### 16.4. Повторный импорт (чистые функции/SQL-выражения; интеграционные — на `transsib_test`)
+Повторный promote без изменений — 0 новых строк и 0 изменений; ручное исключение (`classification_locked`) не сбрасывается; ручная смена подкатегории сохраняется; `description_source = 'manual'` не перезаписывается; новое описание заменяет пустое; пустой результат источника не стирает существующее описание; `wikidata_id` не затирается `NULL`; классификатор не пишет `short_description`, `history`, `ai_summary*`; повторный `classify_places` не меняет `classified_at`, `railway_distance_checked_at` и не пишет в журнал.
+
+### 16.5. Согласованность (R-007)
+Каждая подкатегория имеет подпись, категорию, цвет, иконку, форму маркера, `legacy_type*` из списка допустимых значений enum; все причины исключения из кода есть в реестре; в `frontend/app.js` нет словарей `type1Labels`/`type2Labels`/`type2DescriptionLabels`; `/api/taxonomy` содержит все подкатегории из YAML; `app.taxonomy` не импортирует `app.models` (проверка через `ast`/`sys.modules`).
+
+### 16.6. Пространственные и ручные интеграционные тесты
+
+**Инфраструктура (новое):**
+- Только на отдельной БД `transsib_test`. Создание: `docker compose exec db createdb -U transsib transsib_test`; в ней `CREATE EXTENSION postgis`; схема — `Base.metadata.create_all` + `ensure_*` на движке, созданном из `TEST_DATABASE_URL` (например, `postgresql://transsib:transsib@localhost:5434/transsib_test`).
+- Тест **пропускается** (`skipUnless`), если `TEST_DATABASE_URL` не задан, БД недоступна или имя БД не заканчивается на `_test`. Запуск на рабочей `transsib` запрещён.
+- Каждый тест — в транзакции с откатом; точки ЖД и объекты — в изолированной области (lon=10, lat=10); смещения строить `ST_Project`.
+- Проверяемые функции (`classify_places` и др.) принимают `db`/`engine` аргументом (8.2).
+
+Кейсы: 100 м, 2499 м, 2501 м, далеко от всех точек, рядом с одной из нескольких линий. Граница 2500 м: точка на расстоянии 2500 м (через `ST_Project`) попадает в `ST_DWithin(..., 2500)`, точка чуть дальше — нет. Ручное включение объекта вне радиуса отклоняется; demo вне радиуса исключаются; строка с `classified_at IS NULL` невидима; строка с `railway_distance_checked_at IS NULL` невидима; для большой площадной геометрии проверить принятое правило `representative_point` и документировать отличие от минимального расстояния до границы полигона. Ручные тесты матрицы 18.8 — в `test_manual_protection_integration.py`.
+
+### 16.7. API
+Чистая функция `app/queries.py`: исключённые, `pending_review` и неклассифицированные строки не попадают; demo попадают только в пределах радиуса и получают метку demo; зум ниже порога — фильтр описаний не применяется; зум ≥ 11 — только строки с эффективным описанием хорошего качества; `effective_description` в ответе соответствует `effective_description_source`; `min_priority` соответствует конкретному ярусу (границы 7/8, 10/11, 12/13); `priority_cap` для demo; неверный `bbox` → HTTP 422; контракт ответа содержит прежние поля; проверены limit/truncation (`X-Truncated`, `X-Total-Count`) и детерминированная сортировка; `build_marker` берёт данные из YAML и откатывается на legacy.
+
+### 16.8. Контракт `archive/` (R-010, без БД, `tests/test_archive_contract.py`)
+`app.database` экспортирует `SessionLocal`, `engine`; `app.migrations.ensure_osm_enrichment_schema` существует и принимает один параметр `engine`; у `CulturePlace` есть колонки `ai_summary` (Text), `ai_summary_sources` (JSON), `geom` (Geography), `osm_type` (String), `osm_id` (BigInteger), `short_description`, `history`; `enrich_osm.map_osm_tags` существует. Тест не подключается к БД.
+
+---
+
+## 17. Нефункциональные требования
+
+- Время ответа `/api/culture_places` не должно расти линейно от числа SQL-запросов (N+1 устранён).
+- Классификатор детерминирован и не обращается к сети.
+- Все сообщения скриптов — на русском, как в существующем коде.
+- Секреты и пароли в репозиторий не добавлять.
+- Совместимость: Python 3.11, SQLAlchemy 2.0, PostGIS 16-3.4.
+- `PyYAML` — точная версия в `requirements.txt`, только `yaml.safe_load`.
+
+---
+
+## 18. Критерии приёмки (SQL и проверки)
+
+### 18.1. Радиус (ожидается 0 строк)
+```sql
+SELECT cp.id, cp.name
+FROM culture_place cp
+WHERE cp.excluded_from_map = false
+  AND cp.classified_at IS NOT NULL
+  AND cp.railway_distance_checked_at IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM raw_railway_points r
+      WHERE ST_DWithin(cp.geom, r.geom::geography, 2500)
+  );
+```
+
+### 18.1b. Невидимость до классификации (R-012)
+После этапа 2 ожидается 0 строк:
+```sql
+SELECT id FROM culture_place
+WHERE classified_at IS NULL OR railway_distance_checked_at IS NULL;
+```
+Автотест: строки с `classified_at IS NULL` или `railway_distance_checked_at IS NULL` не возвращаются API ни при каком `zoom`.
+
+### 18.2. Исключённые (ожидается 0)
+```sql
+SELECT id FROM culture_place
+WHERE excluded_from_map = true AND exclusion_reason IS NULL;
+```
+и автотест API: ответ не содержит `excluded_from_map = true`.
+
+### 18.3. Описания и приоритеты по зуму
+
+Универсальный SQL без параметра `zoom` и без применения `priority_tiers` не является критерием приёмки. Проверять результат API для каждого zoom. Обязательные тестовые значения: 7, 8, 10, 11, 12, 13, 22; отдельно проверить границы каждого яруса `priority_tiers`.
+
+Для `zoom >= description_required_from_zoom` (по умолчанию 11) каждая возвращённая строка должна иметь `effective_description_source IS NOT NULL` и `description_quality IN ('ok','ok_ai_summary','ok_manual')`, а `effective_description` в ответе — непустой текст, **совпадающий с выбранным полем БД**. Для `zoom < 11` фильтр качества описания не применяется, но `size_priority` фильтруется по соответствующему ярусу. Demo и обычные OSM-строки не освобождаются от правил зума.
+
+### 18.4. Таксономия (ожидается 0 нарушений)
+- Для обычных (`origin IN ('osm','manual')`) видимых строк: `subcategory` вне списка YAML; `category` не соответствует подкатегории; `excluded_from_map = true` без причины; `excluded_from_map = false` и `object_class = 'unclassified'`. Demo — отдельный технический набор (18.9).
+- все `monument`-строки (legacy `type2`) без `subcategory` не видимы;
+- существует `railway_heritage`, и подкатегория `railway_museums` не пуста **после** этапа 3 (если нет — объяснить в отчёте).
+
+### 18.5. Повторный импорт
+Два последовательных запуска `enrich_osm` + `classify_places` не меняют ни одной строки второго запуска. Проверять не только текстовый отчёт: до и после второго запуска сравнить количество INSERT/UPDATE и контрольные значения полей (включая `classified_at`, `railway_distance_checked_at`) и число строк журнала. Ручные категории, исключения, описания и блокировки сохранены; `NULL` от внешнего источника не затирает имеющееся значение.
+
+### 18.6. Архив (R-010)
+`git diff --stat -- archive/` пуст; контрактный тест `test_archive_contract.py` (16.8) зелёный; `ensure_osm_enrichment_schema`, `SessionLocal`, `engine` на месте. Запуск архивных тестов — только если на этапе 0b подтверждено, что они запускаются; иначе в отчёте объяснить, почему не используется как критерий.
+
+### 18.7. Фронтенд и API
+Чек-лист 11.8; контракт API (R-011); `pending_review` скрыты; demo видны только в пределах 2500 м и явно помечены; AI-summary отображаются только при выполнении D-1 и 9.3; текст карточки совпадает с `effective_description`.
+
+### 18.8. Защита ручных решений и журнал
+Интеграционный тест матрицы приоритетов: (а) объект дальше 2500 м исключается даже при `classification_locked=true` и ручном include; (б) `manual_exclusion` сохраняется; (в) ручная категория/подкатегория не перезаписывается автоматикой; (г) ручное описание не перезаписывается импортом; (д) изменение версии taxonomy не меняет ручную классификацию молча; (е) `unlock` явно возвращает объект под автоматическую классификацию; (ж) `include` без `--subcategory`/`--note` отклоняется; (з) `include` для правила с `overridable: false` отклоняется; (и) любое ручное действие оставляет запись в `classification_audit_log`; (к) `apply-decisions` откатывается целиком при одной ошибке.
+
+### 18.9. Demo и pending_review
+Исходные **40** demo-строк не удалены и не продублированы; видимые demo имеют `origin='demo'`, метку и расстояние ≤ 2500 м; demo вне радиуса скрыты; `init_data.py` проставляет `origin='demo'` при вставке; сообщение скрипта говорит «40». Все `pending_review` скрыты из публичного API и присутствуют в CSV-отчёте ручной проверки.
+
+---
+
+## 19. Правила работы Copilot
+
+### 19.1. Перед этапом
+1. Прочитать относящиеся к этапу файлы (приложение D); сверить с разделом 2.
+2. Дать краткий план и список затрагиваемых файлов и рисков.
+3. Реализовать **только** текущий этап.
+4. Запустить тесты (`python -m unittest discover -s tests`), сообщить результат.
+
+### 19.2. Конфликты
+Если требование противоречит коду — не придумывать решение: зафиксировать конфликт, предложить варианты с последствиями, дождаться решения владельца. Если данных для классификации объекта недостаточно — не придумывать категорию и описание (P-9). Не считать название доказательством значимости. Не выполнять очистку/пересоздание БД, таблиц или томов, а также массовые DELETE/TRUNCATE без отдельного явного подтверждения владельца. Метки `[ПРЕДЛОЖЕНИЕ]` реализовывать только в безопасном режиме по умолчанию (выключено) и вынести вопрос владельцу.
+
+### 19.3. Стиль
+Придерживаться существующих соглашений проекта (структура, именование, русские сообщения). Не дублировать существующую логику, не рефакторить несвязанный код. Файл `start_project.ps1` сохранять в UTF‑8 с BOM.
+
+### 19.4. Формат отчёта по этапу
+1. Список изменённых файлов. 2. Что и почему изменено. 3. Новые поля и миграции. 4. Результаты тестов. 5. Известные ограничения. 6. Невыполненные требования. 7. Риски для следующих этапов. 8. Вопросы к владельцу.
+
+### 19.5. Git
+Ветка `feature/taxonomy` от `data`; тег `backup-before-taxonomy` до первого изменения; один коммит (или серия) на этап с сообщением `этап N: <суть>`; никаких force-push; слияние в `data` — только по решению владельца после приёмки.
+
+---
+
+## Приложение A. Отличия v2.2 от v2.1 и от начальной версии
+
+### A.1. Исправления v2.1 → v2.2
+
+| # | Дефект v2.1 | Исправление v2.2 |
+|---|---|---|
+| 1 | Порядок подкатегорий в таблицах 5.5 делал часть из них недостижимыми (`monuments_memorials` перекрывал доски/военные; `theatres` перекрывали детские/концертные/ДК; `circuses` стоял ниже `theatres`) | Поле `match_order`, глобальная таблица 5.5.0, валидация «частное раньше общего», тесты порядка (16.1–16.2) |
+| 2 | Видимость до классификации: `excluded_from_map` по умолчанию `false`; `railway_distance_m IS NULL` смешивал «вне радиуса» и «не считали» | `VISIBLE_CONDITION` (5.9), колонка `railway_distance_checked_at`, `classified_at` в условии, SQL 18.1b, P-13, R-012 |
+| 3 | Неясное «эффективное описание»; фронтенд брал первое непустое поле, API фильтровал по качеству другого | Алгоритм 9.3, поля `effective_description` + `effective_description_source`, фронтенд показывает только их (11.7), P-14, R-013 |
+| 4 | «Журнал аудита» без таблицы; не определено, какие исключения можно снимать вручную; `include` без аргументов | Таблица `classification_audit_log` (7.2), `overridable` в `exclude_rules`, `include --subcategory --note`, `apply-decisions` |
+| 5 | Регэксп `ЖД` ловил «Рождественский», «Вождь»; не было нормализации `ё` | `normalize_name`, обязательные границы слова для коротких токенов, тесты |
+| 6 | Демо-строк указано 50 (в коде 40); неверная идентификация demo по «устойчивому списку id»; нет правила для дублей | 40 везде; идентификация по `(name, координаты)` + `origin='demo'` прямо в `init_data.py`; отчёт и настройка `hide_duplicates` (D-3a) |
+
+### A.2. Учтённые риски
+- Пустая карта из-за строгих критериев: слабый признак `mkrf_registry` (только `cultural_institutions`) и гейт согласования таблицы решений перед боевым прогоном (этап 2).
+- Невозможность ручного разбора сотен `pending_review`: `tourist_attractions` → `require`; массовая команда `apply-decisions`.
+- Приоритеты demo vs реальные на стартовом зуме: `demo.priority_cap` (предложение), отдельная гистограмма.
+- Описания demo на зуме ≥ 11 исчезают: зафиксировано как ожидаемое, владельца уведомить.
+- Шаг точек ЖД: проверка на этапе 0b, 6.10.
+- Циклический импорт `models` ↔ `taxonomy`: развязка через `build_marker` в `queries.py`.
+- Интеграционные тесты: только на `transsib_test`, функции принимают `db`/`engine`.
+- Архивные тесты вероятно не запускаются: критерий R-010 заменён контрактным тестом (16.8); базовая линия фиксируется на этапе 0b.
+- `PyYAML`: точная версия и `safe_load`.
+- Git: ветка, тег-бэкап, коммит на этап (19.5).
+- Мелкие поправки: «Воздушные шары» — 6 объектов; ограничение поиска на фронтенде (11.9).
+
+### A.3. Отличия v2.1 от начальной версии (ChatGPT) — сохранены
+
+| Начальная версия | В v2.1/v2.2 | Причина |
+|---|---|---|
+| Расширять `Type2` новыми подкатегориями | Новые колонки `category`/`subcategory`, `Type2` не трогаем | PostgreSQL ENUM: `create_all` его не меняет; опасная миграция; фронт зависит от legacy |
+| Новое поле `priority` | Используется существующее `size_priority` | Дублирование; у OSM-объектов оно всё равно везде 1.0 |
+| Отдельная подкатегория внутри «наследия» | Самостоятельная категория `railway_heritage` | Правило владельца №4 |
+| Железнодорожные теги «есть в импорте» | В импорте их **нет** (A-1) | Нужно расширить `OSM_TAG_FILTERS` |
+| Природные объекты в белом списке | Не импортируются; расширение только на охраняемые территории | Объём и малая ценность |
+| `ref:mkrf_*` — признак наследия | Реестр учреждений, не охраны (только слабый признак для учреждений культуры) | Проверено по данным |
+| Нужна подписка `zoomend` | Достаточно `moveend` | Поведение Leaflet |
+| Расстояние считать в API | Предрасчёт `railway_distance_m` | Производительность, единый источник |
+| «`coalesce` при конфликте» как неочевидная деталь | Явная таблица `ON CONFLICT` (8.1) | Новое значение выигрывает у старого — угроза ручным правкам |
+| Радиус параметром `-RadiusMeters=2500` | `0` = «из конфигурации» | Один источник значения (P-5) |
+| Демо — «решить отдельно» | Решение D-3: сохранить demo на карте с меткой и обязательным радиусом | Не выдавать demo за проверенные POI; не обходить R-001 |
+
+---
+
+## Приложение B. Принятые решения владельца проекта
+
+Все решения D-1…D-5 получены от владельца и обязательны к реализации. Они не являются открытыми вопросами и не должны запрашиваться повторно.
+
+| ID | Решение владельца | Нормативное следствие |
+|---|---|---|
+| **D-1** | **Да, с условиями** — разрешить проверенные `ai_summary` | Применять 5.7 и 9.3: валидные HTTPS-источники, формальная проверка кодом, смысловая проверка — процессом исследования; `ai_summary` может быть эффективным описанием, но не копируется в `short_description`. Наличие ссылок само по себе не доказывает значимость. |
+| **D-2** | **Порог 11, затем калибровка** | `description_required_from_zoom: 11`. После анализа гистограммы можно предложить владельцу калибровку; не менять порог автоматически. |
+| **D-3** | **Оставить демо-места на карте** (в коде их 40) | Не удалять demo-строки и не исключать их только из-за `origin='demo'`. Явная метка «Демонстрационный объект». Радиус 2500 м и описание на зуме ≥ 11 применяются и к ним. Demo не доказательство значимости. Дубли с реальными объектами — предложение D-3a (13.3), по умолчанию не скрываются. |
+| **D-4** | **`pending_review` скрыть до проверки** | Все `pending_review` исключены из публичного API/карты до явного решения владельца; остаются в БД и в CSV `classification_review.csv`. Ручное включение — после проверки с фиксацией подкатегории и основания (`include --subcategory --note`). |
+| **D-5** | **Да, расширить импорт на вокзалы и охраняемые территории** | Расширить `OSM_TAG_FILTERS` согласно 12.6. Не импортировать массово все обычные `railway=station`; исторические станции проходят отдельные признаки значимости. После изменения фильтров повторно выполнить фильтрацию/импорт PBF. |
+
+### B.1. Приоритет решений и трактовка конфликтов
+1. Географическое ограничение R-001 выше любого решения, включая ручное включение и demo.
+2. `pending_review` скрыт до ручной проверки независимо от zoom.
+3. Demo разрешено показывать как демонстрационные данные, но нельзя автоматически объявлять их культурным наследием или подтверждёнными достопримечательностями.
+4. `ai_summary` — допустимый источник эффективного описания при выполнении условий D-1; это не автоматическое доказательство значимости.
+5. Порог 11 действует до отдельного решения по итогам калибровки.
+6. Строка, не прошедшая классификацию и расчёт расстояния, невидима (P-13).
+
+---
+
+## Приложение C. Минимальные команды для владельца (описать в README)
+
+```powershell
+# резервная копия перед первым запуском
+docker compose exec db pg_dump -U transsib transsib > backup_before_taxonomy.sql
+
+# пересборка после изменения config/taxonomy.yaml или кода
+docker compose up -d --build backend
+
+# пробный прогон классификации (ничего не меняет)
+docker compose exec backend python -m scripts.classify_places --dry-run --report
+
+# боевой прогон (после утверждения таблицы решений владельцем)
+docker compose exec backend python -m scripts.classify_places
+
+# после архивного импорта ai_summary — пересчитать описания
+docker compose exec backend python -m scripts.classify_places --recompute-descriptions
+
+# объекты на ручную проверку
+docker compose exec backend python -m scripts.manage_places list-pending --limit 100
+
+# массовые решения из CSV (сначала --dry-run)
+docker compose exec backend python -m scripts.manage_places apply-decisions data/reports/classification_review.csv --dry-run
+
+# проверка качества карты
+docker compose exec backend python -m scripts.audit_map_quality
+
+# тестовая БД для интеграционных тестов (один раз)
+docker compose exec db createdb -U transsib transsib_test
+```
+
+> Важно для владельца: после обновления схемы **карта остаётся пустой, пока не выполнен `classify_places`** — это защита от показа неклассифицированных объектов. Файлы `data/reports/*.csv` исключены из Git.
+
+---
+
+## Приложение D. Шаблоны запросов для Copilot по этапам
+
+Общий вход для каждого запроса: «Прочитай `.github/copilot-instructions.md`. Работай только над указанным этапом. В конце выдай отчёт по формату 19.4.»
+
+**Этап 0b:** «Выполни этап 0b из `docs/TZ_AI_AGENT_v2.2.md`. Прочитай разделы 1, 2, 6.10, 12, 14, 15 (этап 0b), 19. Создай ветку `feature/taxonomy` от `data` и тег `backup-before-taxonomy`. Реализуй `scripts/audit_tags.py`, прогони его, сохрани `data/reports/tag_audit.md`. Зафиксируй результат `python -m unittest discover -s tests` и проверь, запускаются ли `archive/tests`. Код приложения и БД не изменяй.»
+
+**Этап 1:** «Выполни этап 1. Прочитай разделы 1, 5, 9 (9.2–9.3), 14, 16.1–16.3, 16.5, 16.8. Создай `config/taxonomy.yaml`, `app/taxonomy.py`, `app/description_quality.py`, тесты, добавь `PyYAML` (точная версия). БД, `models.py`, API и скрипты не трогай. `app.taxonomy` не должен импортировать `app.models`. Если аудит 0b противоречит таблицам 5.5/5.7 — остановись и опиши конфликт.»
+
+**Этап 2:** «Выполни этап 2. Прочитай разделы 5.9, 6, 7, 8.2–8.3, 9.3, 13, 16.4, 16.6, 18.1–18.2, 18.8–18.9. Реализуй колонки и таблицу аудита через `ensure_taxonomy_schema`, `scripts/classify_places.py`, `scripts/manage_places.py`, правки `init_data.py`, `VISIBLE_CONDITION`. Сначала только `--dry-run` на копии БД; боевой прогон — только после утверждения владельцем таблицы «подкатегория × решение». Интеграционные тесты — только на `transsib_test`.»
+
+**Этап 3:** «Выполни этап 3. Прочитай разделы 8.1, 12.6–12.7, 15 (этап 3), 16.4, 18.5. Измени `promote_selected_pois`, `_culture_place_row`, `OSM_TAG_FILTERS`, `start_project.ps1` (сохрани BOM), `README.md`. Не меняй `map_osm_tags` и существующие тесты. Рабочую БД не очищай.»
+
+**Этап 4:** «Выполни этап 4. Прочитай разделы 5.9, 9.4, 10, 16.7. Реализуй `app/queries.py`, обнови `/api/culture_places`, добавь `/api/taxonomy`, расширь `schemas.py` только необязательными полями. Устрани N+1. Контракт ответа не ломать.»
+
+**Этап 5:** «Выполни этап 5. Прочитай раздел 11 и 9.4. Измени `frontend/app.js` и заголовки в `frontend/index.html`. Сохрани `escapeHtml`/`safeHttpUrl`, кластеризацию и поиск. Описание в карточке — только `effective_description`. Приложи результат чек-листа 11.8.»
+
+**Этап 6:** «Выполни этап 6. Прочитай разделы 18, 15 (этап 6), 19.4. Реализуй `scripts/audit_map_quality.py` (код возврата ≠ 0 при нарушениях), обнови `README.md` (команды владельца, резервная копия, откат, пустая карта до классификации, действия после архивного импорта, ограничение поиска). Подготовь итоговый отчёт по критериям раздела 18.»
+
+*Конец документа.*
