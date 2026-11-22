@@ -21,7 +21,7 @@
 
 1. **Радиус 2500 м.** Показываются только объекты не дальше 2500 м от ближайшей точки `raw_railway_points`. Правило жёсткое: его не обходят ни ручное включение, ни demo-данные.
 2. **Пять независимых аспектов:** категория, подкатегория, класс (`heritage`/`tourism`/`both`/`unclassified`), статус показа, приоритет — разные поля, не смешивать.
-3. **Исключение ≠ удаление.** Объект остаётся в БД с `excluded_from_map = true` и причиной.
+3. **Исключение ≠ удаление.** Строки `culture_place` остаются с `excluded_from_map = true` и причиной. Жёстко исключённые кандидаты, не перенесённые в `culture_place`, сохраняются в `osm_pois` и `osm_poi_exclusion_registry`.
 4. **Один источник правил** — `config/taxonomy.yaml`. Никаких дублирующих списков категорий в Python/JS.
 5. **Название — не доказательство значимости.** Оно может только выбрать подкатегорию, но не доказывает культурную/историческую/туристическую ценность и не присваивает `heritage`.
 6. **Идентификация, качество описания и значимость — разные вещи.** `wikidata_id`, URL и качественный текст не являются самостоятельным доказательством значимости. Учитывать только независимые признаки по разделу 5.7 ТЗ. `ai_summary` — strong-признак только при глобальном флаге, разрешении подкатегории и ручной объектной отметке `ai_summary_significance_verified`.
@@ -43,7 +43,7 @@
 - Подключать Alembic или другой мигратор (принят паттерн `ensure_*` с `ADD COLUMN IF NOT EXISTS`).
 - Менять сигнатуры и имена: `ensure_osm_enrichment_schema`, `SessionLocal`, `engine`, `map_osm_tags`; менять существующие тесты и поведение, которое они проверяют.
 - Ломать контракт `/api/culture_places`: существующие поля ответа не удалять и не менять типы (только добавлять необязательные).
-- Копировать `ai_summary` в `short_description`; писать из классификатора в `short_description`, `history`, `ai_summary`, `ai_summary_sources`.
+- Копировать `ai_summary` в `short_description`; писать из классификатора в `short_description`, `history`, `ai_summary`, `ai_summary_sources`. Ручную отметку `ai_summary_significance_verified` сбрасывать при изменении `ai_summary` или `ai_summary_sources`; не выставлять её автоматически.
 - Скрейпить сторонние сайты кодом; делать запросы к Wikidata/Wikipedia для объектов вне радиуса.
 - Добавлять зависимости, кроме `PyYAML` (точная версия из ТЗ; загрузка YAML только через `yaml.safe_load`).
 - Переписывать фронтенд целиком; ослаблять `escapeHtml`/`safeHttpUrl`.
@@ -59,7 +59,8 @@
 | `app/migrations.py` | `ensure_osm_enrichment_schema`; новая схема — отдельной функцией `ensure_taxonomy_schema` |
 | `app/main.py` | FastAPI; при импорте обращается к БД |
 | `app/taxonomy.py`, `app/description_quality.py`, `app/queries.py` | новые **чистые** модули (без БД при импорте) |
-| `config/taxonomy.yaml` | единственный источник правил |
+| `config/taxonomy.yaml` | единственный источник правил таксономии |
+| `osm_poi_exclusion_registry` | реестр текущих/снятых жёстких исключений OSM-кандидатов (связь с `osm_pois`) |
 | `scripts/import_osm_pbf.py`, `import_osm.py`, `enrich_osm.py`, `init_data.py` | пайплайн данных |
 | `scripts/classify_places.py`, `manage_places.py`, `audit_tags.py`, `audit_map_quality.py` | новые скрипты |
 | `frontend/app.js`, `frontend/index.html` | карта (Leaflet) |
