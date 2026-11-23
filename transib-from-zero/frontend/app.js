@@ -10,30 +10,13 @@ let allPlaces = [];
 let searchQuery = "";
 let highlightedPlaceId = null;
 
+let taxonomy = null;
 const hiddenTypes = {
-    type1: new Set(),
-    type2: new Set()
+    category: new Set(),
+    object_class: new Set()
 };
-
-const type1Labels = { human: "Искусственный", nature: "Природные" };
-const type2Labels = {
-    museum: "Музеи", monument: "Памятники", architecture: "Архитектура",
-    theater: "Театры", temple: "Храмы", lake: "Озера",
-    river: "Реки", reserve: "Заповедники", forest: "Леса",
-    historic_nature: "Истор. природа"
-};
-const type2DescriptionLabels = {
-    museum: "Музей",
-    monument: "Памятник",
-    architecture: "Архитектурный объект",
-    theater: "Театр",
-    temple: "Храм",
-    lake: "Озеро",
-    river: "Река",
-    reserve: "Заповедник",
-    forest: "Лес",
-    historic_nature: "Природный объект с историческим значением"
-};
+let placeLoadTimer = null;
+let placeLoadController = null;
 
 function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, character => ({
@@ -56,20 +39,18 @@ function safeHttpUrl(value) {
 }
 
 function getPlaceDescription(place) {
-    const description = [place.history, place.short_description, place.ai_summary]
-        .find(value => typeof value === 'string' && value.trim());
-    return description
-        ? description.trim()
-        : type2DescriptionLabels[place.type2] || 'Объект культуры';
+    return typeof place.effective_description === 'string'
+        && place.effective_description.trim()
+        ? place.effective_description.trim()
+        : null;
 }
 
 function getAiSummarySourcesHtml(place) {
+    if (place.effective_description_source !== 'ai_summary') return '';
     const sources = Array.isArray(place.ai_summary_sources)
         ? place.ai_summary_sources
         : [];
-    const hasExistingDescription = [place.history, place.short_description]
-        .some(value => typeof value === 'string' && value.trim());
-    if (hasExistingDescription || !place.ai_summary || !sources.length) return '';
+    if (!sources.length) return '';
 
     const links = sources.map(source => {
         const url = safeHttpUrl(source.url);
@@ -82,11 +63,28 @@ function getAiSummarySourcesHtml(place) {
         : '';
 }
 
+function getSubcategoryLabel(subcategoryId) {
+    if (!taxonomy || !subcategoryId) return null;
+    for (const category of taxonomy.categories) {
+        for (const subcategory of category.subcategories) {
+            if (subcategory.id === subcategoryId) return subcategory.label;
+        }
+    }
+    return null;
+}
+
+function getObjectClassLabel(objectClassId) {
+    if (!taxonomy || !objectClassId) return null;
+    const objectClass = taxonomy.object_classes.find(item => item.id === objectClassId);
+    return objectClass ? objectClass.label : null;
+}
+
 
 function initLegend() {
-    const type1Container = document.getElementById('type1-list');
-    const type2Container = document.getElementById('type2-list');
-    
+    if (!taxonomy) return;
+    const classContainer = document.getElementById('object-class-list');
+    const categoryContainer = document.getElementById('category-list');
+
     const railwayContainer = document.getElementById('railway-list');
     const railwayDiv = document.createElement('div');
     railwayDiv.className = 'legend-item';
@@ -94,20 +92,29 @@ function initLegend() {
     railwayDiv.onclick = toggleRailway;
     railwayContainer.appendChild(railwayDiv);
 
-    Object.keys(type1Labels).forEach(key => {
+    taxonomy.object_classes.forEach(objectClass => {
         const div = document.createElement('div');
         div.className = 'legend-item';
-        div.innerHTML = `<span>${type1Labels[key]}</span><span class="flag on" id="flag-t1-${key}">+</span>`;
-        div.onclick = () => toggleFilter('type1', key, `flag-t1-${key}`);
-        type1Container.appendChild(div);
+        const flagId = `flag-class-${objectClass.id}`;
+        div.innerHTML = `<span>${escapeHtml(objectClass.label)}</span><span class="flag on" id="${flagId}">+</span>`;
+        div.onclick = () => toggleFilter('object_class', objectClass.id, flagId);
+        classContainer.appendChild(div);
     });
 
-    Object.keys(type2Labels).forEach(key => {
+    taxonomy.categories.forEach(category => {
         const div = document.createElement('div');
         div.className = 'legend-item';
-        div.innerHTML = `<span>${type2Labels[key]}</span><span class="flag on" id="flag-t2-${key}">+</span>`;
-        div.onclick = () => toggleFilter('type2', key, `flag-t2-${key}`);
-        type2Container.appendChild(div);
+        const flagId = `flag-category-${category.id}`;
+        div.innerHTML = `<span>${escapeHtml(category.label)}</span><span class="flag on" id="${flagId}">+</span>`;
+        div.onclick = () => toggleFilter('category', category.id, flagId);
+        categoryContainer.appendChild(div);
+
+        category.subcategories.forEach(subcategory => {
+            const subDiv = document.createElement('div');
+            subDiv.className = 'legend-subcategory';
+            subDiv.innerHTML = `<span class="legend-subcategory-mark" style="background:${escapeHtml(subcategory.marker.color)}"></span>${escapeHtml(subcategory.label)}`;
+            categoryContainer.appendChild(subDiv);
+        });
     });
 }
 
@@ -142,15 +149,23 @@ function getPopupContent(p) {
         : '';
 
     const dateStr = p.creation_date ? ` • Год: ${p.creation_date}` : '';
+    const subcategory = getSubcategoryLabel(p.subcategory);
+    const objectClass = getObjectClassLabel(p.object_class);
+    const demoHtml = p.origin === 'demo'
+        ? '<div><b>Демонстрационный объект</b></div>'
+        : '';
     const fieldsHtml = `<div class="popup-fields">
         <h3>${escapeHtml(p.name)}</h3>
-        <div><b>Тип:</b> ${escapeHtml(type1Labels[p.type1] || p.type1)} • ${escapeHtml(type2Labels[p.type2] || p.type2)}</div>
+        <div><b>Подкатегория:</b> ${escapeHtml(subcategory || p.subcategory || 'Не указана')}</div>
+        <div><b>Класс:</b> ${escapeHtml(objectClass || p.object_class || 'Не указан')}</div>
+        ${demoHtml}
         <div><b>Координаты:</b> ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${dateStr}</div>
     </div>`;
 
-    const descHtml = `<div class="popup-description">
-        ${escapeHtml(getPlaceDescription(p))}
-    </div>`;
+    const effectiveDescription = getPlaceDescription(p);
+    const descHtml = effectiveDescription
+        ? `<div class="popup-description">${escapeHtml(effectiveDescription)}</div>`
+        : `<div class="popup-subcategory-label">${escapeHtml(subcategory || 'Подкатегория не указана')}</div>`;
     const aiSourcesHtml = getAiSummarySourcesHtml(p);
 
     let sourcesHtml = '';
@@ -181,11 +196,11 @@ function renderMarkers() {
     for (let key in markerRegistry) delete markerRegistry[key]; 
 
     allPlaces.forEach(p => {
-        const isType1Hidden = hiddenTypes.type1.has(p.type1);
-        const isType2Hidden = hiddenTypes.type2.has(p.type2);
+        const isCategoryHidden = hiddenTypes.category.has(p.category);
+        const isObjectClassHidden = hiddenTypes.object_class.has(p.object_class);
         const matchesSearch = p.name.toLowerCase().includes(searchQuery);
 
-        if (!isType1Hidden && !isType2Hidden && matchesSearch) {
+        if (!isCategoryHidden && !isObjectClassHidden && matchesSearch) {
             const isHighlighted = (p.id === highlightedPlaceId);
             
             const size = isHighlighted ? 36 : 20;
@@ -246,13 +261,64 @@ function renderSidebar() {
 async function loadPlaces() {
     const bounds = map.getBounds();
     const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+    if (placeLoadController) placeLoadController.abort();
+    placeLoadController = new AbortController();
 
-    const response = await fetch(`/api/culture_places?bbox=${bbox}`);
-    if (!response.ok) throw new Error(`Не удалось загрузить объекты культуры: ${response.status}`);
-    allPlaces = await response.json();
-    if (!Array.isArray(allPlaces)) throw new Error('API вернул некорректный список объектов культуры.');
+    const params = new URLSearchParams({
+        bbox,
+        zoom: String(map.getZoom())
+    });
+    const statusElement = document.getElementById('load-status');
+    try {
+        const response = await fetch(`/api/culture_places?${params}`, {
+            signal: placeLoadController.signal
+        });
+        if (!response.ok) throw new Error(`Не удалось загрузить объекты культуры: ${response.status}`);
+        const places = await response.json();
+        if (!Array.isArray(places)) throw new Error('API вернул некорректный список объектов культуры.');
 
-    renderMarkers();
+        allPlaces = places;
+        if (statusElement) {
+            if (response.headers.get('X-Truncated') === 'true') {
+                statusElement.textContent = 'Показана неполная выборка объектов.';
+            } else {
+                statusElement.textContent = '';
+            }
+        }
+        renderMarkers();
+    } catch (error) {
+        if (error.name === 'AbortError') return;
+        allPlaces = [];
+        renderMarkers();
+        if (statusElement) statusElement.textContent = escapeHtml(error.message);
+    }
+}
+
+function schedulePlaceLoad() {
+    if (placeLoadTimer) window.clearTimeout(placeLoadTimer);
+    placeLoadTimer = window.setTimeout(loadPlaces, 250);
+}
+
+async function loadTaxonomy() {
+    const statusElement = document.getElementById('load-status');
+    try {
+        const response = await fetch('/api/taxonomy');
+        if (!response.ok) throw new Error(`Не удалось загрузить легенду: ${response.status}`);
+        const data = await response.json();
+        if (!Array.isArray(data.categories) || !Array.isArray(data.object_classes)) {
+            throw new Error('API вернул некорректную схему таксономии.');
+        }
+        taxonomy = data;
+        initLegend();
+        if (statusElement) statusElement.textContent = '';
+    } catch (error) {
+        taxonomy = null;
+        allPlaces = [];
+        renderMarkers();
+        if (statusElement) {
+            statusElement.textContent = `Ошибка загрузки легенды: ${escapeHtml(error.message)}`;
+        }
+    }
 }
 
 let railwayLayer = null;
@@ -363,7 +429,6 @@ document.getElementById('legend-btn').onclick = () => {
 };
 
 loadRailway();
-loadPlaces();
-map.on('moveend', loadPlaces);
+loadTaxonomy().then(schedulePlaceLoad);
+map.on('moveend', schedulePlaceLoad);
 map.on('zoomend', loadRailway);
-initLegend();

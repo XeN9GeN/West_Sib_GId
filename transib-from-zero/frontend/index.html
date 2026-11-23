@@ -101,6 +101,34 @@
                 user-select: none; 
             }
             .legend-item:hover { background: #f0f0f0; }
+
+            .legend-subcategory {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 0 3px 12px;
+                font-size: 12px;
+                color: #555;
+            }
+            .legend-subcategory-mark {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                flex-shrink: 0;
+            }
+            #load-status {
+                position: absolute;
+                left: 320px;
+                bottom: 20px;
+                z-index: 1000;
+                max-width: 420px;
+                padding: 8px 10px;
+                border-radius: 4px;
+                background: rgba(255,255,255,0.95);
+                box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+                font-size: 12px;
+                color: #333;
+            }
             
             .flag { font-weight: bold; font-family: monospace; font-size: 16px; }
             .flag.on { color: green; }
@@ -184,6 +212,12 @@
                 border-bottom: 1px solid #eee;
                 background: #fafafa;
             }
+            .popup-subcategory-label {
+                padding: 8px 15px;
+                font-size: 12px;
+                color: #666;
+                border-top: 1px solid #eee;
+            }
 
             .popup-sources {
                 padding: 10px 15px 15px 15px;
@@ -207,6 +241,7 @@
 
         <input type="text" id="search-input" placeholder="Поиск по названию..." />
         <button id="legend-btn">Легенда</button>
+        <div id="load-status" role="status" aria-live="polite"></div>
 
         <div id="legend-panel">
             <div class="legend-section">
@@ -214,12 +249,12 @@
                 <div id="railway-list"></div>
             </div>
             <div class="legend-section">
-                <h4>Тип 1 (Nature/Artificial)</h4>
-                <div id="type1-list"></div>
+                <h4>Класс</h4>
+                <div id="object-class-list"></div>
             </div>
             <div class="legend-section">
-                <h4>Тип 2 (Categories)</h4>
-                <div id="type2-list"></div>
+                <h4>Категория</h4>
+                <div id="category-list"></div>
             </div>
         </div>
 

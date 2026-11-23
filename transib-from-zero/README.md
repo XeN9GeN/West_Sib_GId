@@ -97,6 +97,10 @@ docker compose up -d --build backend
 docker compose exec backend python -m scripts.enrich_osm --wikivoyage-only
 ```
 
+Поиск по названию и боковой список работают только по объектам, уже загруженным
+для текущего bbox и zoom карты. На другом участке карты или при другом зуме
+скрытые объекты не находятся поиском до их загрузки в текущую выборку.
+
 Данные © OpenStreetMap contributors, лицензия ODbL:
 https://www.openstreetmap.org/copyright.
 
