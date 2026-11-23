@@ -9,9 +9,10 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app import models
 from app.database import SessionLocal, engine
+from app.taxonomy import load_taxonomy
 
 
-IMPORT_RADIUS_METERS = 5000
+IMPORT_RADIUS_METERS = load_taxonomy()["settings"]["railway_radius_meters"]
 BATCH_SIZE = 1000
 
 
@@ -119,7 +120,7 @@ def main():
         "--radius-m",
         type=float,
         default=IMPORT_RADIUS_METERS,
-        help="Радиус пространственного отбора в метрах (по умолчанию 5000).",
+        help=f"Радиус пространственного отбора в метрах (по умолчанию {IMPORT_RADIUS_METERS}).",
     )
     args = parser.parse_args()
 

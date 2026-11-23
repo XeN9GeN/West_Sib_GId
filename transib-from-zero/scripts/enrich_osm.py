@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app import models
 from app.database import Base, SessionLocal, engine
-from app.migrations import ensure_osm_enrichment_schema
+from app.migrations import ensure_osm_enrichment_schema, ensure_taxonomy_schema
 
 
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
@@ -1011,6 +1011,7 @@ def main():
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
     Base.metadata.create_all(bind=engine)
     ensure_osm_enrichment_schema(engine)
+    ensure_taxonomy_schema(engine)
     db = SessionLocal()
     try:
         if not args.promote_only:

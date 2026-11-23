@@ -5,6 +5,7 @@ from geoalchemy2.elements import WKTElement
 from sqlalchemy import text
 from app.database import engine, SessionLocal, Base
 from app import models
+from app.migrations import ensure_taxonomy_schema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAILWAY_POINTS_FILE = PROJECT_ROOT / "data" / "row_trailway_points.xml"
@@ -181,6 +182,7 @@ def main():
         db.execute(text("CREATE EXTENSION IF NOT EXISTS postgis;"))
         db.commit()
         Base.metadata.create_all(bind=engine)
+        ensure_taxonomy_schema(engine)
 
         db.execute(text("""
             ALTER TABLE raw_railway_points
@@ -215,11 +217,12 @@ def main():
                     name=name, type1=models.Type1(t1), type2=models.Type2(t2),
                     short_description=short, history=hist, sources=src or [],
                     creation_date=date, size_priority=prio,
+                    origin="demo",
                     geom=WKTElement(f"POINT({lon} {lat})", srid=4326)
                 )
                 db.add(place)
             db.commit()
-            print("База успешно заполнена 50 местами!")
+            print("База успешно заполнена 40 местами!")
 
         points_need_reload = db.query(models.RawRailwayPoint).filter(
             (models.RawRailwayPoint.track_id.is_(None))

@@ -8,13 +8,15 @@ import json
 
 from .database import SessionLocal, engine, Base
 from . import models, schemas
-from .migrations import ensure_osm_enrichment_schema
+from .migrations import ensure_osm_enrichment_schema, ensure_taxonomy_schema
+from .queries import VISIBLE_CONDITION
 
 
 with engine.begin() as connection:
     connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
 Base.metadata.create_all(bind=engine)
 ensure_osm_enrichment_schema(engine)
+ensure_taxonomy_schema(engine)
 
 app = FastAPI(title="TransSib Culture API")
 
@@ -44,7 +46,7 @@ def culture_places(
     result = []
     
     geom_as_geom = cast(models.CulturePlace.geom, Geometry(geometry_type="POINT", srid=4326))
-    stmt = select(models.CulturePlace)
+    stmt = select(models.CulturePlace).where(text(VISIBLE_CONDITION))
 
     if bbox:
         min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(","))

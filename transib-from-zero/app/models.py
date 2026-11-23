@@ -1,17 +1,22 @@
 import enum
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     Date,
+    DateTime,
     Enum,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     ARRAY,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.orm import relationship
 from geoalchemy2 import Geography, Geometry
@@ -105,6 +110,17 @@ class RailwayDetail(Base):
 
 class CulturePlace(Base):
     __tablename__ = "culture_place"
+    __table_args__ = (
+        Index(
+            "idx_culture_place_visible",
+            "size_priority",
+            postgresql_where=text(
+                "excluded_from_map = false AND classified_at IS NOT NULL "
+                "AND railway_distance_m IS NOT NULL"
+            ),
+        ),
+    )
+
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False, index=True)
     type1 = Column(Enum(Type1), nullable=False)
@@ -123,7 +139,71 @@ class CulturePlace(Base):
     size_priority = Column(Float, nullable=False, default=1.0)
     geom = Column(Geography(geometry_type="POINT", srid=4326), nullable=False)
     train_coord_id = Column(Integer, ForeignKey("train_coord.id"), nullable=True)
+    category = Column(String(48), nullable=True)
+    subcategory = Column(String(64), nullable=True)
+    object_class = Column(String(16), nullable=False, default="unclassified", server_default="unclassified")
+    excluded_from_map = Column(Boolean, nullable=False, default=False, server_default="false")
+    exclusion_reason = Column(String(48), nullable=True)
+    classification_locked = Column(Boolean, nullable=False, default=False, server_default="false")
+    classified_at = Column(DateTime(timezone=True), nullable=True)
+    taxonomy_version = Column(String(16), nullable=True)
+    classification_evidence = Column(JSON, nullable=True)
+    ai_summary_significance_verified = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    )
+    railway_distance_m = Column(Float, nullable=True)
+    railway_distance_checked_at = Column(DateTime(timezone=True), nullable=True)
+    description_source = Column(String(32), nullable=True)
+    effective_description_source = Column(String(32), nullable=True)
+    description_quality = Column(String(24), nullable=True)
+    description_checked_at = Column(DateTime(timezone=True), nullable=True)
+    origin = Column(String(16), nullable=True, default="osm", server_default="osm")
 
     @property
     def marker(self):
         return MARKER_STYLE.get(self.type2, {"color": "#555", "icon": "fa-circle", "shape": "pin"})
+
+
+class ClassificationAuditLog(Base):
+    __tablename__ = "classification_audit_log"
+
+    id = Column(Integer, primary_key=True)
+    culture_place_id = Column(Integer, nullable=True)
+    osm_type = Column(String(16), nullable=True)
+    osm_id = Column(BigInteger, nullable=True)
+    action = Column(String(40), nullable=False)
+    actor = Column(String(16), nullable=False)
+    old_value = Column(JSON, nullable=True)
+    new_value = Column(JSON, nullable=True)
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class OSMPOIExclusionRegistry(Base):
+    __tablename__ = "osm_poi_exclusion_registry"
+
+    id = Column(Integer, primary_key=True)
+    osm_poi_id = Column(
+        Integer,
+        ForeignKey("osm_pois.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    rule_id = Column(String(64), nullable=False)
+    exclusion_reason = Column(String(48), nullable=False)
+    taxonomy_version = Column(String(16), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    first_seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_evaluated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "idx_osm_poi_exclusion_registry_active",
+            "is_active",
+            postgresql_where=text("is_active = true"),
+        ),
+    )
