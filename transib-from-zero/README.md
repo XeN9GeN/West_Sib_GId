@@ -101,6 +101,51 @@ docker compose exec backend python -m scripts.enrich_osm --wikivoyage-only
 для текущего bbox и zoom карты. На другом участке карты или при другом зуме
 скрытые объекты не находятся поиском до их загрузки в текущую выборку.
 
+## Приёмочная проверка карты
+
+Перед боевой классификацией сделайте резервную копию:
+
+```powershell
+docker compose exec db pg_dump -U transsib transsib > backup_before_taxonomy.sql
+```
+
+После изменения кода или `config/taxonomy.yaml` пересоберите backend:
+
+```powershell
+docker compose up -d --build backend
+```
+
+Пробный прогон классификации не изменяет данные:
+
+```powershell
+docker compose exec backend python -m scripts.classify_places --dry-run --report
+```
+
+Только после проверки отчёта запускайте боевую классификацию:
+
+```powershell
+docker compose exec backend python -m scripts.classify_places
+```
+
+До завершения классификации карта намеренно остаётся пустой для
+неклассифицированных строк.
+
+После импорта архивных материалов пересчитайте эффективные описания:
+
+```powershell
+docker compose exec backend python -m scripts.classify_places --recompute-descriptions
+```
+
+Для отката базы остановите импорты и восстановите резервную копию в отдельной
+среде до проверки и применения к рабочей БД. Не используйте для отката
+очистку или пересоздание рабочих таблиц.
+
+Проверка качества:
+
+```powershell
+docker compose exec backend python -m scripts.audit_map_quality
+```
+
 Данные © OpenStreetMap contributors, лицензия ODbL:
 https://www.openstreetmap.org/copyright.
 
