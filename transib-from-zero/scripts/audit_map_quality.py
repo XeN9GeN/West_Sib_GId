@@ -1,6 +1,7 @@
 """Читающий аудит качества карты по критериям раздела 18."""
 
 import argparse
+import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,19 @@ def _visible_condition_sql():
     """
 
 
+def _map_taxonomy_visibility_sql():
+    return """
+          AND (
+              origin = 'demo'
+              OR (
+                  category IS NOT NULL
+                  AND subcategory IS NOT NULL
+                  AND object_class <> 'unclassified'
+              )
+          )
+    """
+
+
 def run_sql_audit(connection):
     connection.exec_driver_sql("SET TRANSACTION READ ONLY")
     findings = []
@@ -50,7 +64,6 @@ def run_sql_audit(connection):
               WHERE ST_DWithin(culture_place.geom, r.geom::geography, 2500)
           )
         ORDER BY id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.1 Радиус 2500 м", len(radius),
                                 tuple(f"{row['id']}: {row['name']}" for row in radius)))
@@ -60,7 +73,6 @@ def run_sql_audit(connection):
         FROM culture_place
         WHERE classified_at IS NULL OR railway_distance_checked_at IS NULL
         ORDER BY id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.1b Невидимость до классификации", len(invisible),
                                 tuple(f"{row['id']}: {row['name']}" for row in invisible)))
@@ -70,7 +82,6 @@ def run_sql_audit(connection):
         FROM culture_place
         WHERE excluded_from_map = true AND exclusion_reason IS NULL
         ORDER BY id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.2 Исключённые без причины", len(excluded_without_reason),
                                 tuple(f"{row['id']}: {row['name']}" for row in excluded_without_reason)))
@@ -95,7 +106,6 @@ def run_sql_audit(connection):
         GROUP BY osm_poi_id
         HAVING COUNT(*) > 1
         ORDER BY osm_poi_id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.2 Активные дубликаты реестра",
                                 len(duplicate_registry),
@@ -107,12 +117,12 @@ def run_sql_audit(connection):
         SELECT id, name
         FROM culture_place
         {_visible_condition_sql()}
+        {_map_taxonomy_visibility_sql()}
           AND type2::text = 'monument'
           AND subcategory IS NULL
         ORDER BY id
-        LIMIT 100
     """)
-    findings.append(AuditFinding("18.4 Monument без подкатегории",
+    findings.append(AuditFinding("18.4 Видимый monument без подкатегории",
                                 len(monument_without_subcategory),
                                 tuple(f"{row['id']}: {row['name']}" for row in monument_without_subcategory)))
 
@@ -125,7 +135,6 @@ def run_sql_audit(connection):
           AND effective_description_source IS NOT NULL
           AND effective_description_source NOT IN ('history', 'short_description', 'ai_summary')
         ORDER BY id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.3 Неизвестный источник effective_description",
                                 len(low_zoom_description),
@@ -144,7 +153,6 @@ def run_sql_audit(connection):
               WHERE ST_DWithin(culture_place.geom, r.geom::geography, 2500)
           )
         ORDER BY id
-        LIMIT 100
     """)
     findings.append(AuditFinding("18.9 Demo вне радиуса", len(demo_outside),
                                 tuple(f"{row['id']}: {row['name']}" for row in demo_outside)))
@@ -152,12 +160,27 @@ def run_sql_audit(connection):
     demo_count = connection.execute(text("""
         SELECT COUNT(*) FROM culture_place WHERE origin = 'demo'
     """)).scalar_one()
-    findings.append(AuditFinding("18.9 Число demo-строк", 0 if demo_count == 40 else demo_count))
+    findings.append(AuditFinding(
+        "18.9 Число demo-строк",
+        0 if demo_count == 40 else abs(40 - demo_count),
+        (f"Ожидается 40, найдено {demo_count}.",),
+    ))
+
+    invalid_origin = connection.execute(text("""
+        SELECT COUNT(*)
+        FROM culture_place
+        WHERE origin IS NULL OR origin NOT IN ('osm', 'manual', 'demo')
+    """)).scalar_one()
+    findings.append(AuditFinding(
+        "18.4/18.9 Отсутствующий или неизвестный origin",
+        invalid_origin,
+    ))
 
     pending_visible = _rows(connection, f"""
         SELECT id, name
         FROM culture_place
         {_visible_condition_sql()}
+        {_map_taxonomy_visibility_sql()}
           AND exclusion_reason = 'pending_review'
         ORDER BY id
         LIMIT 100
@@ -189,14 +212,16 @@ def run_taxonomy_audit(connection, taxonomy):
         WHERE excluded_from_map = false
           AND classified_at IS NOT NULL
           AND railway_distance_checked_at IS NOT NULL
-          AND origin IN ('osm', 'manual')
+          AND origin IS DISTINCT FROM 'demo'
+          AND category IS NOT NULL
+          AND subcategory IS NOT NULL
+          AND object_class <> 'unclassified'
         ORDER BY id
     """)
 
     invalid_subcategory = []
     category_mismatch = []
     unclassified = []
-    excluded_without_reason = []
     for place in visible_regular:
         subcategory = place["subcategory"]
         if subcategory not in subcategories:
@@ -208,8 +233,6 @@ def run_taxonomy_audit(connection, taxonomy):
             )
         if place["object_class"] == "unclassified":
             unclassified.append(f"{place['id']}: {place['name']}")
-        if place["excluded_from_map"] and not place["exclusion_reason"]:
-            excluded_without_reason.append(f"{place['id']}: {place['name']}")
 
     findings.append(AuditFinding("18.4 Подкатегория вне YAML",
                                 len(invalid_subcategory),
@@ -220,10 +243,6 @@ def run_taxonomy_audit(connection, taxonomy):
     findings.append(AuditFinding("18.4 Видимый unclassified",
                                 len(unclassified),
                                 tuple(unclassified)))
-    findings.append(AuditFinding("18.4 Исключённая строка без причины",
-                                len(excluded_without_reason),
-                                tuple(excluded_without_reason)))
-
     category_count = connection.execute(text("""
         SELECT COUNT(*) FROM culture_place
         WHERE category = 'railway_heritage'
@@ -235,9 +254,11 @@ def run_taxonomy_audit(connection, taxonomy):
     findings.append(AuditFinding("18.4 Наличие railway_heritage",
                                 0 if category_count > 0 else 1))
     findings.append(AuditFinding("18.4 Наличие railway_museums",
-                                0 if museum_count > 0 else 0,
-                                ("Подкатегория не обязательна к непустому наличию "
-                                 "после этапа 3; отсутствие объясняется в отчёте.",
+                                0 if museum_count > 0 else 1,
+                                (("Найдено railway_museums после этапа 3."
+                                  if museum_count else
+                                  "railway_museums отсутствует после этапа 3; "
+                                  "нужно объяснить причину."),
                                  f"Число строк: {museum_count}")))
 
     rule_ids = {rule["id"] for rule in taxonomy["exclude_rules"]}
@@ -250,7 +271,7 @@ def run_taxonomy_audit(connection, taxonomy):
     invalid_registry = [
         f"{row['rule_id']}: {row['exclusion_reason']}"
         for row in registry_rows
-        if row["rule_id"] not in rule_ids
+        if row["rule_id"] not in rule_ids | reasons
         or row["exclusion_reason"] not in reasons
     ]
     findings.append(AuditFinding("18.2 Правила реестра есть в YAML",
@@ -260,14 +281,50 @@ def run_taxonomy_audit(connection, taxonomy):
     return findings
 
 
-def _git_archive_check():
-    completed = subprocess.run(
-        ["git", "diff", "--stat", "--", "transib-from-zero/archive/", "archive/"],
-        cwd=str(REPOSITORY_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
+def _pending_report_finding(connection):
+    pending_ids = {
+        row[0]
+        for row in connection.execute(text("""
+            SELECT id FROM culture_place
+            WHERE exclusion_reason = 'pending_review'
+        """)).all()
+    }
+    report_path = PROJECT_ROOT / "data" / "reports" / "classification_review.csv"
+    if not report_path.is_file():
+        return AuditFinding(
+            "18.9 pending_review в CSV-отчёте",
+            len(pending_ids) or 1,
+            (f"Файл отсутствует: {report_path}",),
+        )
+
+    with report_path.open("r", encoding="utf-8-sig", newline="") as source:
+        rows = list(csv.DictReader(source))
+    reported_ids = {
+        int(row["culture_place_id"])
+        for row in rows
+        if row.get("culture_place_id", "").isdigit()
+    }
+    missing_ids = sorted(pending_ids - reported_ids)
+    return AuditFinding(
+        "18.9 pending_review в CSV-отчёте",
+        len(missing_ids),
+        tuple(str(place_id) for place_id in missing_ids[:20]),
     )
+
+
+def _git_archive_check():
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "--stat", "--", "transib-from-zero/archive/", "archive/"],
+            cwd=str(REPOSITORY_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return "Не проверено: в текущей среде недоступен git-репозиторий."
+    if completed.returncode != 0:
+        return "Не проверено: в текущей среде недоступен git-репозиторий."
     return completed.stdout.strip()
 
 
@@ -285,9 +342,10 @@ def render_report(findings, taxonomy, manual_status):
     ]
     for finding in findings:
         details = "<br>".join(finding.details[:20]) if finding.details else "—"
+        details = details.replace("|", r"\|")
         lines.append(
             f"| {finding.criterion} | {finding.count} | "
-            f"{details.replace('|', r'\\|')} |"
+            f"{details} |"
         )
 
     git_archive_diff = _git_archive_check()
@@ -339,6 +397,7 @@ def main(argv=None):
         with audit_engine.connect() as connection:
             findings.extend(run_sql_audit(connection))
             findings.extend(run_taxonomy_audit(connection, taxonomy))
+            findings.append(_pending_report_finding(connection))
     finally:
         audit_engine.dispose()
 

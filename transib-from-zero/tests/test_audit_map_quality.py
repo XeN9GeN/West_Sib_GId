@@ -45,6 +45,16 @@ class AuditMapQualityTests(unittest.TestCase):
         self.assertIn("archive/", arguments)
         self.assertIn("transib-from-zero/archive/", arguments)
 
+    def test_archive_check_handles_missing_git_executable(self):
+        with patch.object(
+            audit_map_quality.subprocess,
+            "run",
+            side_effect=FileNotFoundError,
+        ):
+            result = audit_map_quality._git_archive_check()
+
+        self.assertIn("Не проверено", result)
+
     def test_report_is_markdown_and_contains_manual_sections(self):
         report = audit_map_quality.render_report(
             [],
