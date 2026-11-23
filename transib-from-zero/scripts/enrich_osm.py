@@ -16,12 +16,13 @@ from urllib.parse import quote, urlencode, urlsplit, unquote
 from urllib.request import Request, urlopen
 
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import func, select, text, update
+from sqlalchemy import and_, case, func, or_, select, text, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app import models
 from app.database import Base, SessionLocal, engine
 from app.migrations import ensure_osm_enrichment_schema, ensure_taxonomy_schema
+from app.taxonomy import classify, load_taxonomy
 
 
 WIKIDATA_SPARQL_URL = "https://query.wikidata.org/sparql"
@@ -888,6 +889,30 @@ def _source_urls(poi, metadata):
     return list(dict.fromkeys(sources))
 
 
+def _classify_promotion_candidate(poi, taxonomy):
+    tags = poi.tags or {}
+    name = tags.get("name:ru") or tags.get("name") or poi.wikidata_label or ""
+    return classify(
+        {
+            "name": name,
+            "tags": tags,
+            "wikidata_id": poi.wikidata_id or tags.get("wikidata"),
+            "wikidata_description": poi.wikidata_description,
+            "wikipedia_extract": poi.wikipedia_extract,
+            "wikipedia_url": poi.wikipedia_url,
+            "wikivoyage_extract": poi.wikivoyage_extract,
+            "wikivoyage_url": poi.wikivoyage_url,
+            "wikipedia_article_verified": bool(
+                poi.wikipedia_extract and poi.wikipedia_url
+            ),
+            "wikivoyage_verified": bool(
+                poi.wikivoyage_extract and poi.wikivoyage_url
+            ),
+        },
+        taxonomy,
+    )
+
+
 def _culture_place_row(poi, lon, lat):
     tags = poi.tags or {}
     name = (
@@ -898,12 +923,20 @@ def _culture_place_row(poi, lon, lat):
     if not name:
         return None
 
-    description = (
-        tags.get("description:ru")
-        or poi.wikipedia_extract
-        or poi.wikidata_description
-        or tags.get("description")
-        or poi.wikivoyage_extract
+    description_candidates = (
+        (tags.get("description:ru"), "osm_description_ru"),
+        (poi.wikipedia_extract, "wikipedia"),
+        (poi.wikidata_description, "wikidata"),
+        (tags.get("description"), "osm_description"),
+        (poi.wikivoyage_extract, "wikivoyage"),
+    )
+    description, description_source = next(
+        (
+            (value, source)
+            for value, source in description_candidates
+            if value
+        ),
+        (None, None),
     )
     type1, type2 = map_osm_tags(tags)
     return {
@@ -914,6 +947,7 @@ def _culture_place_row(poi, lon, lat):
         "type1": type1,
         "type2": type2,
         "short_description": description,
+        "description_source": description_source,
         "history": None,
         "sources": _source_urls(poi, {
             "wikidata_id": poi.wikidata_id,
@@ -929,7 +963,83 @@ def _culture_place_row(poi, lon, lat):
     }
 
 
-def promote_selected_pois(db):
+_HARD_EXCLUSION_REASONS = {
+    "unsupported_object_type",
+    "technical_infrastructure",
+    "individual_zoo_animal_or_enclosure",
+    "duplicate_or_component",
+    "invalid_or_incomplete_data",
+}
+
+
+def _record_candidate_exclusion(db, poi, result, registry_by_poi_id):
+    registry = registry_by_poi_id.get(poi.id)
+    if result is None and (registry is None or not registry.is_active):
+        return
+    if result is not None and (
+        registry is not None
+        and registry.is_active
+        and registry.rule_id == result.evidence[0]["rule"]
+        and registry.exclusion_reason == result.exclusion_reason
+        and registry.taxonomy_version == result.taxonomy_version
+    ):
+        return
+
+    now = datetime.now(timezone.utc)
+    if result is None:
+        old_value = {
+            "rule_id": registry.rule_id,
+            "exclusion_reason": registry.exclusion_reason,
+            "taxonomy_version": registry.taxonomy_version,
+            "is_active": True,
+        }
+        registry.is_active = False
+        registry.last_evaluated_at = now
+        registry.resolved_at = now
+        action = "auto_resolve_candidate_exclusion"
+        new_value = dict(old_value, is_active=False)
+    else:
+        new_value = {
+            "rule_id": result.evidence[0]["rule"],
+            "exclusion_reason": result.exclusion_reason,
+            "taxonomy_version": result.taxonomy_version,
+            "is_active": True,
+        }
+        old_value = None
+        if registry is None:
+            registry = models.OSMPOIExclusionRegistry(
+                osm_poi_id=poi.id,
+                first_seen_at=now,
+            )
+            db.add(registry)
+            registry_by_poi_id[poi.id] = registry
+        else:
+            old_value = {
+                "rule_id": registry.rule_id,
+                "exclusion_reason": registry.exclusion_reason,
+                "taxonomy_version": registry.taxonomy_version,
+                "is_active": registry.is_active,
+            }
+        registry.rule_id = new_value["rule_id"]
+        registry.exclusion_reason = new_value["exclusion_reason"]
+        registry.taxonomy_version = new_value["taxonomy_version"]
+        registry.is_active = True
+        registry.last_evaluated_at = now
+        registry.resolved_at = None
+        action = "auto_exclude_candidate"
+
+    db.add(models.ClassificationAuditLog(
+        osm_type=poi.osm_type,
+        osm_id=poi.osm_id,
+        action=action,
+        actor="import",
+        old_value=old_value,
+        new_value=new_value,
+    ))
+
+
+def promote_selected_pois(db, taxonomy=None):
+    taxonomy = taxonomy or load_taxonomy()
     selected_rows = db.execute(
         select(
             models.OSMPOI,
@@ -941,8 +1051,60 @@ def promote_selected_pois(db):
         )
     ).all()
 
+    if not selected_rows:
+        print("В радиусе отбора нет OSM-объектов для переноса.")
+        return
+
+    pois = [row[0] for row in selected_rows]
+    poi_ids = [poi.id for poi in pois]
+    identities = [(poi.osm_type, poi.osm_id) for poi in pois]
+    existing_identities = set()
+    registry_by_poi_id = {}
+    for offset in range(0, len(poi_ids), BATCH_SIZE):
+        batch_ids = poi_ids[offset:offset + BATCH_SIZE]
+        registry_by_poi_id.update({
+            registry.osm_poi_id: registry
+            for registry in db.execute(
+                select(models.OSMPOIExclusionRegistry).where(
+                    models.OSMPOIExclusionRegistry.osm_poi_id.in_(batch_ids)
+                )
+            ).scalars()
+        })
+    for offset in range(0, len(identities), BATCH_SIZE):
+        batch = identities[offset:offset + BATCH_SIZE]
+        existing_identities.update(
+            (row[0], row[1])
+            for row in db.execute(
+                select(
+                    models.CulturePlace.osm_type,
+                    models.CulturePlace.osm_id,
+                ).where(
+                    tuple_(
+                        models.CulturePlace.osm_type,
+                        models.CulturePlace.osm_id,
+                    ).in_(batch)
+                )
+            ).all()
+        )
+
     rows = []
+    hard_excluded = 0
     for poi, lon, lat in selected_rows:
+        result = _classify_promotion_candidate(poi, taxonomy)
+        identity = (poi.osm_type, poi.osm_id)
+        new_candidate = identity not in existing_identities
+        hard_exclusion = result.exclusion_reason in _HARD_EXCLUSION_REASONS
+        if new_candidate and hard_exclusion:
+            _record_candidate_exclusion(
+                db,
+                poi,
+                result,
+                registry_by_poi_id,
+            )
+            hard_excluded += 1
+            continue
+
+        _record_candidate_exclusion(db, poi, None, registry_by_poi_id)
         row = _culture_place_row(poi, float(lon), float(lat))
         if not row:
             continue
@@ -952,39 +1114,108 @@ def promote_selected_pois(db):
         for offset in range(0, len(rows), BATCH_SIZE):
             batch = rows[offset:offset + BATCH_SIZE]
             statement = insert(models.CulturePlace).values(batch)
+            excluded = statement.excluded
+            place = models.CulturePlace
+            can_update_type = and_(
+                place.classification_locked.is_(False),
+                place.subcategory.is_(None),
+            )
+            can_update_description = and_(
+                excluded.short_description.is_not(None),
+                func.btrim(excluded.short_description) != "",
+                func.coalesce(place.description_source, "") != "manual",
+            )
+            wikidata_id = func.coalesce(excluded.wikidata_id, place.wikidata_id)
+            creation_date = func.coalesce(excluded.creation_date, place.creation_date)
+            photo_url = func.coalesce(excluded.photo_url, place.photo_url)
+            photo_attribution = func.coalesce(
+                excluded.photo_attribution,
+                place.photo_attribution,
+            )
             statement = statement.on_conflict_do_update(
                 index_elements=["osm_type", "osm_id"],
                 index_where=text("osm_type IS NOT NULL AND osm_id IS NOT NULL"),
                 set_={
-                    "wikidata_id": statement.excluded.wikidata_id,
-                    "name": statement.excluded.name,
-                    "type1": statement.excluded.type1,
-                    "type2": statement.excluded.type2,
-                    "short_description": func.coalesce(
-                        statement.excluded.short_description,
-                        models.CulturePlace.short_description,
+                    "wikidata_id": wikidata_id,
+                    "name": case(
+                        (
+                            place.classification_locked.is_(False),
+                            excluded.name,
+                        ),
+                        else_=place.name,
                     ),
-                    "sources": statement.excluded.sources,
-                    "creation_date": func.coalesce(
-                        statement.excluded.creation_date,
-                        models.CulturePlace.creation_date,
+                    "type1": case(
+                        (
+                            can_update_type,
+                            excluded.type1,
+                        ),
+                        else_=place.type1,
                     ),
-                    "photo_url": func.coalesce(
-                        statement.excluded.photo_url,
-                        models.CulturePlace.photo_url,
+                    "type2": case(
+                        (
+                            can_update_type,
+                            excluded.type2,
+                        ),
+                        else_=place.type2,
                     ),
-                    "photo_attribution": func.coalesce(
-                        statement.excluded.photo_attribution,
-                        models.CulturePlace.photo_attribution,
+                    "short_description": case(
+                        (
+                            can_update_description,
+                            excluded.short_description,
+                        ),
+                        else_=place.short_description,
                     ),
-                    "geom": statement.excluded.geom,
+                    "description_source": case(
+                        (
+                            can_update_description,
+                            excluded.description_source,
+                        ),
+                        else_=place.description_source,
+                    ),
+                    "sources": excluded.sources,
+                    "creation_date": creation_date,
+                    "photo_url": photo_url,
+                    "photo_attribution": photo_attribution,
+                    "geom": excluded.geom,
                 },
+                where=or_(
+                    place.wikidata_id.is_distinct_from(wikidata_id),
+                    and_(
+                        place.classification_locked.is_(False),
+                        place.name.is_distinct_from(excluded.name),
+                    ),
+                    and_(
+                        can_update_type,
+                        place.type1.is_distinct_from(excluded.type1),
+                    ),
+                    and_(
+                        can_update_type,
+                        place.type2.is_distinct_from(excluded.type2),
+                    ),
+                    and_(
+                        can_update_description,
+                        place.short_description.is_distinct_from(
+                            excluded.short_description
+                        ),
+                    ),
+                    and_(
+                        can_update_description,
+                        place.description_source.is_distinct_from(
+                            excluded.description_source
+                        ),
+                    ),
+                    place.sources.is_distinct_from(excluded.sources),
+                    place.creation_date.is_distinct_from(creation_date),
+                    place.photo_url.is_distinct_from(photo_url),
+                    place.photo_attribution.is_distinct_from(photo_attribution),
+                    place.geom.is_distinct_from(excluded.geom),
+                ),
             )
             db.execute(statement)
-    db.commit()
     print(
         f"В culture_place перенесено/обновлено объектов OSM: {len(rows)} "
-        f"(без названия пропущено: {len(selected_rows) - len(rows)})."
+        f"(жёстко исключено: {hard_excluded}; "
+        f"без названия пропущено: {len(selected_rows) - len(rows) - hard_excluded})."
     )
 
 
@@ -1023,6 +1254,7 @@ def main():
                 enrich_selected_pois(db)
         if not args.enrich_only:
             promote_selected_pois(db)
+            db.commit()
     finally:
         db.close()
 

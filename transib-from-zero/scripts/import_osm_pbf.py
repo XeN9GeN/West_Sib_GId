@@ -41,6 +41,11 @@ OSM_TAG_FILTERS = (
     "nwr/heritage",
     "nwr/amenity=theatre,place_of_worship,arts_centre",
     "nwr/building=church,chapel,mosque,synagogue,temple",
+    "nwr/building=train_station",
+    "nwr/railway=museum",
+    "nwr/leisure=nature_reserve",
+    "nwr/boundary=protected_area",
+    "nwr/boundary=national_park",
     "nwr/memorial",
 )
 
