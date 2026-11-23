@@ -1,0 +1,587 @@
+version: "1.0"
+settings:
+  railway_radius_meters: 2500
+  description:
+    min_chars: 50
+    min_words: 6
+    min_cyrillic_ratio: 0.5
+    placeholder_patterns:
+      - '^(музей|церковь|храм|памятник)( в городе)?( .+)?$'
+      - '^памятник города .+$'
+    accept_ai_summary: true
+  evidence:
+    min_strong: 1
+    min_weak: 2
+    historic_year_cutoff: 1975
+    trust_researched_ai_summary: true
+    heritage_status_values: ["1", "2", "4", "yes"]
+    heritage_registry_tags: ["ref:okn", "ref:egrokn"]
+    mkrf_registry:
+      tags: [ref:mkrf_theaters, ref:mkrf_museums]
+      only_categories: [cultural_institutions]
+  zoom:
+    description_required_from_zoom: 11
+    priority_tiers:
+      - {max_zoom: 7, min_priority: 2.5}
+      - {max_zoom: 10, min_priority: 1.8}
+      - {max_zoom: 12, min_priority: 1.2}
+      - {max_zoom: 22, min_priority: 0.0}
+  demo:
+    hide_duplicates: false
+    priority_cap: null
+object_classes: [heritage, tourism, both, unclassified]
+exclusion_reasons:
+  outside_railway_radius: "Дальше 2500 м от ближайшей точки железной дороги"
+  unsupported_object_type: "Неподдерживаемый тип объекта"
+  insufficient_cultural_significance: "Недостаточно подтверждений культурной значимости"
+  insufficient_tourism_value: "Недостаточно подтверждений туристической ценности"
+  duplicate_or_component: "Дубликат или часть другого объекта"
+  technical_infrastructure: "Техническая инфраструктура"
+  individual_zoo_animal_or_enclosure: "Отдельное животное или вольер зоопарка"
+  invalid_or_incomplete_data: "Недостаточные или некорректные данные"
+  manual_exclusion: "Исключено владельцем"
+  pending_review: "Требуется проверка владельцем"
+  demo_data: "Демонстрационные данные"
+exclude_rules:
+  - id: zoo_animal_or_enclosure
+    match:
+      - tags: ["attraction=animal"]
+    reason: individual_zoo_animal_or_enclosure
+    overridable: false
+  - id: amusement_ride
+    match:
+      - tags: ["attraction=amusement_ride|roller_coaster|bumper_car|jet|carousel|swing|big_wheel"]
+    reason: duplicate_or_component
+    overridable: false
+  - id: commercial_poi
+    match:
+      - tags: ["tourism=attraction", "shop|office|craft"]
+    reason: unsupported_object_type
+    overridable: false
+  - id: bench
+    match:
+      - tags: ["amenity=bench"]
+    reason: unsupported_object_type
+    overridable: false
+  - id: path_or_road
+    match:
+      - tags: ["highway", "!historic", "!memorial"]
+    reason: unsupported_object_type
+    overridable: false
+  - id: school_or_kids_centre
+    match:
+      - tags: ["amenity=arts_centre"]
+        name_regex: "школа искусств|детск|дом творчества|(?<!\\w)цдт(?!\\w)|студия"
+    reason: unsupported_object_type
+    overridable: true
+  - id: auditorium
+    match:
+      - tags: ["amenity=theatre"]
+        name_regex: "актовый зал"
+    reason: technical_infrastructure
+    overridable: true
+  - id: unnamed_or_broken
+    match:
+      - tags: ["!name", "!wikidata"]
+    reason: invalid_or_incomplete_data
+    overridable: false
+categories:
+  - id: heritage
+    label: Историческое и культурное наследие
+    subcategories:
+      - id: military_heritage
+        label: Военная техника-памятники
+        match_order: 40
+        must_precede: [military_memorials, monuments_memorials]
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 0.8
+        match:
+          - tags: ["historic=aircraft|tank|military_vehicle"]
+          - tags: ["historic=memorial|monument", "memorial=war_memorial"]
+            name_regex: "танк|(?<!\\w)т-34(?!\\w)|(?<!\\w)бмп(?!\\w)|(?<!\\w)бтр(?!\\w)|гаубиц|пушк|катюш|истребител|самолет|вертолет|(?<!\\w)су-25(?!\\w)|(?<!\\w)ис-3(?!\\w)|(?<!\\w)зис-2(?!\\w)|(?<!\\w)бм-13(?!\\w)"
+        marker: {color: "#c0392b", icon: "fa-shield-halved", shape: pin}
+      - id: military_memorials
+        label: Военные мемориалы
+        match_order: 41
+        must_precede: [monuments_memorials]
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.5
+        match:
+          - tags: ["memorial=war_memorial"]
+          - tags: ["memorial:conflict"]
+          - tags: ["war_memorial=yes"]
+          - name_regex: "вечный огонь|братская могила"
+        marker: {color: "#922b21", icon: "fa-shield-halved", shape: pin}
+      - id: memorial_plaques
+        label: Мемориальные доски
+        match_order: 42
+        must_precede: [monuments_memorials]
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: heritage
+        significance: require
+        significance_kind: cultural
+        base_priority: 0.6
+        match:
+          - tags: ["memorial=plaque"]
+        marker: {color: "#a93226", icon: "fa-tablet-screen-button", shape: pin}
+      - id: monuments_memorials
+        label: Памятники и мемориалы
+        match_order: 43
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.2
+        match:
+          - tags: ["historic=monument|memorial|wayside_cross|wayside_shrine"]
+          - tags: ["memorial=statue|bust|stele|obelisk|stone|sculpture|tree"]
+          - tags: ["heritage"]
+        marker: {color: "#c0392b", icon: "fa-monument", shape: pin}
+      - id: archaeological_sites
+        label: Археологические памятники
+        match_order: 50
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: heritage
+        significance: require
+        significance_kind: cultural
+        base_priority: 1.6
+        match:
+          - tags: ["historic=archaeological_site|fort|tumulus"]
+        marker: {color: "#7d6608", icon: "fa-landmark", shape: pin}
+      - id: industrial_heritage
+        label: Промышленное наследие
+        match_order: 51
+        must_precede: [historical_architecture]
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.2
+        match:
+          - tags: ["historic=factory|mine|mill|industrial|works"]
+          - tags: ["industrial", "historic"]
+        marker: {color: "#935116", icon: "fa-industry", shape: pin}
+      - id: historical_architecture
+        label: Историческая архитектура
+        match_order: 52
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.4
+        match:
+          - tags: ["historic=building|castle|manor|ruins"]
+          - tags: ["building", "heritage"]
+        marker: {color: "#2980b9", icon: "fa-building", shape: pin}
+  - id: railway_heritage
+    label: Железнодорожное наследие
+    subcategories:
+      - id: locomotives_rolling_stock
+        label: Паровозы и подвижной состав
+        match_order: 10
+        must_precede: [military_heritage, monuments_memorials]
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: both
+        significance: review
+        significance_kind: cultural
+        base_priority: 2.0
+        match:
+          - tags: ["historic=locomotive|wagon|railway_car"]
+          - tags: ["historic=memorial|monument"]
+            name_regex: 'паровоз|локомотив|тепловоз|электровоз|(?<!\w)фд\d{2}(?!\w)|(?<!\w)эр\d(?!\w)|(?<!\w)п36(?!\w)|(?<!\w)танк-паровоз'
+        marker: {color: "#7b241c", icon: "fa-train", shape: pin}
+      - id: railway_museums
+        label: Железнодорожные музеи
+        match_order: 11
+        must_precede: [historical_museums, specialized_museums]
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: both
+        significance: include
+        significance_kind: cultural
+        base_priority: 2.2
+        match:
+          - tags: ["tourism=museum", "museum=railway"]
+          - tags: ["railway=museum"]
+          - tags: ["tourism=museum"]
+            name_regex: "железнодорожн|(?<!\\w)жд(?!\\w)|железной дороги"
+            name_not_regex: "железнодорожного района"
+        marker: {color: "#6c3483", icon: "fa-train-subway", shape: pin}
+      - id: railway_stations_historic
+        label: Исторические вокзалы и станции
+        match_order: 12
+        must_precede: [historical_architecture]
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: both
+        significance: require
+        significance_kind: cultural
+        base_priority: 2.0
+        match:
+          - tags: ["building=train_station"]
+          - tags: ["railway=station"]
+        marker: {color: "#2874a6", icon: "fa-train", shape: pin}
+      - id: railway_structures
+        label: Исторические железнодорожные сооружения
+        match_order: 13
+        must_precede: [historical_architecture, industrial_heritage]
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.2
+        match:
+          - tags: ["historic=railway_station|railway_bridge|railway_tunnel|railway_signal|railway_roundhouse|railway_depot|railway_water_tower"]
+          - tags: ["historic=bridge|industrial"]
+            name_regex: "железнодорожн|водонапорн|депо"
+        marker: {color: "#1f618d", icon: "fa-train", shape: pin}
+  - id: cultural_institutions
+    label: Культурные учреждения
+    subcategories:
+      - id: art_museums
+        label: Художественные музеи и галереи
+        match_order: 60
+        must_precede: [historical_museums, specialized_museums]
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: both
+        significance: include
+        significance_kind: cultural
+        base_priority: 1.8
+        match:
+          - tags: ["tourism=gallery"]
+          - tags: ["tourism=museum", "museum=art"]
+          - tags: ["tourism=museum"]
+            name_regex: "художествен|картинн|галере"
+        marker: {color: "#8e44ad", icon: "fa-palette", shape: pin}
+      - id: historical_museums
+        label: Исторические и краеведческие музеи
+        match_order: 61
+        must_precede: [specialized_museums]
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: both
+        significance: include
+        significance_kind: cultural
+        base_priority: 1.8
+        match:
+          - tags: ["tourism=museum", "museum=history|local"]
+          - tags: ["tourism=museum"]
+            name_regex: "краеведч|истори|район"
+        marker: {color: "#76448a", icon: "fa-landmark", shape: pin}
+      - id: specialized_museums
+        label: Специализированные и прочие музеи
+        match_order: 62
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: both
+        significance: include
+        significance_kind: cultural
+        base_priority: 1.4
+        match:
+          - tags: ["tourism=museum"]
+          - tags: ["museum"]
+        marker: {color: "#8e44ad", icon: "fa-landmark", shape: pin}
+      - id: children_theatres
+        label: Детские театры и театры кукол
+        match_order: 30
+        must_precede: [theatres]
+        legacy_type1: human
+        legacy_type2: theater
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 1.5
+        match:
+          - tags: ["amenity=theatre"]
+            name_regex: "кукол|детск|юного зрителя|молодежн"
+        marker: {color: "#d35400", icon: "fa-child", shape: pin}
+      - id: concert_venues
+        label: Филармонии и концертные залы
+        match_order: 31
+        must_precede: [theatres]
+        legacy_type1: human
+        legacy_type2: theater
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 1.7
+        match:
+          - tags: ["amenity=theatre|arts_centre"]
+            name_regex: "филармони|концертн|органн"
+        marker: {color: "#e67e22", icon: "fa-music", shape: pin}
+      - id: cultural_centres
+        label: Дворцы и дома культуры
+        match_order: 32
+        must_precede: [theatres]
+        legacy_type1: human
+        legacy_type2: theater
+        default_class: tourism
+        significance: review
+        significance_kind: tourism
+        base_priority: 0.9
+        match:
+          - name_regex: "дворец культуры|дом культуры|культурный центр"
+        marker: {color: "#ca6f1e", icon: "fa-people-group", shape: pin}
+      - id: theatres
+        label: Театры
+        match_order: 33
+        legacy_type1: human
+        legacy_type2: theater
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 1.7
+        match:
+          - tags: ["amenity=theatre"]
+        marker: {color: "#e67e22", icon: "fa-masks-theater", shape: pin}
+  - id: religious_heritage
+    label: Религиозные объекты
+    subcategories:
+      - id: mosques
+        label: Мечети
+        match_order: 70
+        must_precede: [other_religious_sites]
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.4
+        match:
+          - tags: ["religion=muslim"]
+        marker: {color: "#d4ac0d", icon: "fa-mosque", shape: pin}
+      - id: synagogues
+        label: Синагоги
+        match_order: 71
+        must_precede: [other_religious_sites]
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.4
+        match:
+          - tags: ["religion=jewish"]
+        marker: {color: "#b03a2e", icon: "fa-star-of-david", shape: pin}
+      - id: buddhist_sites
+        label: Буддийские центры
+        match_order: 72
+        must_precede: [other_religious_sites]
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.2
+        match:
+          - tags: ["religion=buddhist"]
+        marker: {color: "#af601a", icon: "fa-dharmachakra", shape: pin}
+      - id: other_christian_sites
+        label: Другие христианские объекты
+        match_order: 73
+        must_precede: [orthodox_churches]
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.0
+        match:
+          - tags: ["denomination=catholic|baptist|lutheran|protestant|armenian_apostolic|evangelical_lutheran|methodist|presbyterian|reformed"]
+        marker: {color: "#7d3c98", icon: "fa-cross", shape: pin}
+      - id: orthodox_churches
+        label: Православные храмы и монастыри
+        match_order: 74
+        must_precede: [other_religious_sites]
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 1.4
+        match:
+          - tags: ["religion=christian", "denomination=orthodox|russian_orthodox"]
+          - tags: ["religion=christian", "!denomination"]
+            name_regex: "православ|собор|храм|часовн|монастыр"
+        marker: {color: "#d4af37", icon: "fa-church", shape: pin}
+      - id: other_religious_sites
+        label: Прочие религиозные объекты
+        match_order: 75
+        legacy_type1: human
+        legacy_type2: temple
+        default_class: heritage
+        significance: review
+        significance_kind: cultural
+        base_priority: 0.8
+        match:
+          - tags: ["amenity=place_of_worship"]
+        marker: {color: "#b7950b", icon: "fa-place-of-worship", shape: pin}
+  - id: natural_heritage
+    label: Природное наследие
+    subcategories:
+      - id: protected_areas
+        label: Охраняемые территории
+        match_order: 80
+        must_precede: [natural_monuments]
+        legacy_type1: nature
+        legacy_type2: reserve
+        default_class: both
+        significance: require
+        significance_kind: cultural
+        base_priority: 2.0
+        match:
+          - tags: ["boundary=protected_area|national_park"]
+          - tags: ["leisure=nature_reserve"]
+        marker: {color: "#27ae60", icon: "fa-tree", shape: circle}
+      - id: natural_monuments
+        label: Природные памятники
+        match_order: 81
+        must_precede: [lakes, rivers, forests]
+        legacy_type1: nature
+        legacy_type2: historic_nature
+        default_class: both
+        significance: require
+        significance_kind: cultural
+        base_priority: 1.8
+        match:
+          - tags: ["natural=spring|cave_entrance|peak"]
+        marker: {color: "#f39c12", icon: "fa-mountain-sun", shape: star}
+      - id: lakes
+        label: Озёра
+        match_order: 82
+        legacy_type1: nature
+        legacy_type2: lake
+        default_class: tourism
+        significance: require
+        significance_kind: tourism
+        base_priority: 1.0
+        match:
+          - tags: ["natural=water", "water=lake|reservoir"]
+        marker: {color: "#1abc9c", icon: "fa-water", shape: circle}
+      - id: rivers
+        label: Реки
+        match_order: 83
+        legacy_type1: nature
+        legacy_type2: river
+        default_class: tourism
+        significance: require
+        significance_kind: tourism
+        base_priority: 1.0
+        match:
+          - tags: ["waterway=river"]
+          - tags: ["natural=water", "water=river"]
+        marker: {color: "#16a085", icon: "fa-water", shape: circle}
+      - id: forests
+        label: Леса
+        match_order: 84
+        legacy_type1: nature
+        legacy_type2: forest
+        default_class: tourism
+        significance: require
+        significance_kind: tourism
+        base_priority: 1.0
+        match:
+          - tags: ["landuse=forest"]
+          - tags: ["natural=wood"]
+        marker: {color: "#2ecc71", icon: "fa-tree", shape: circle}
+  - id: tourism_recreation
+    label: Туристические и рекреационные объекты
+    subcategories:
+      - id: circuses
+        label: Цирки
+        match_order: 20
+        must_precede: [theatres]
+        legacy_type1: human
+        legacy_type2: theater
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 1.7
+        match:
+          - tags: ["theatre:genre=circus"]
+          - tags: ["amenity=theatre"]
+            name_regex: "цирк"
+        marker: {color: "#b9770e", icon: "fa-masks-theater", shape: pin}
+      - id: planetariums
+        label: Планетарии
+        match_order: 21
+        must_precede: [specialized_museums]
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 1.5
+        match:
+          - tags: ["tourism=museum"]
+            name_regex: "планетари"
+        marker: {color: "#5b2c6f", icon: "fa-moon", shape: pin}
+      - id: zoos
+        label: Зоопарки
+        match_order: 22
+        must_precede: [tourist_attractions]
+        legacy_type1: human
+        legacy_type2: museum
+        default_class: tourism
+        significance: include
+        significance_kind: tourism
+        base_priority: 2.0
+        match:
+          - tags: ["tourism=zoo", "!zoo=petting_zoo"]
+        marker: {color: "#239b56", icon: "fa-paw", shape: pin}
+      - id: art_objects
+        label: Арт-объекты
+        match_order: 90
+        must_precede: [tourist_attractions]
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: tourism
+        significance: review
+        significance_kind: tourism
+        base_priority: 0.6
+        match:
+          - tags: ["tourism=artwork"]
+          - tags: ["tourism=attraction", "attraction=statue|artwork|sculpture"]
+        marker: {color: "#af7ac5", icon: "fa-palette", shape: star}
+      - id: parks
+        label: Значимые парки
+        match_order: 91
+        must_precede: [tourist_attractions]
+        legacy_type1: human
+        legacy_type2: architecture
+        default_class: tourism
+        significance: review
+        significance_kind: tourism
+        base_priority: 1.0
+        match:
+          - tags: ["leisure=park", "wikipedia"]
+          - tags: ["leisure=park", "wikidata"]
+        marker: {color: "#28b463", icon: "fa-tree", shape: circle}
+      - id: tourist_attractions
+        label: Туристические достопримечательности
+        match_order: 99
+        legacy_type1: human
+        legacy_type2: monument
+        default_class: tourism
+        significance: require
+        significance_kind: tourism
+        base_priority: 0.7
+        match:
+          - tags: ["tourism=attraction"]
+        marker: {color: "#d68910", icon: "fa-location-dot", shape: pin}

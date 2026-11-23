@@ -6,3 +6,4 @@ psycopg2-binary==2.9.9
 pydantic==2.7.1
 python-dotenv==1.0.1
 shapely==2.0.4
+PyYAML==6.0.2
