@@ -27,3 +27,10 @@ class CulturePlaceOut(BaseModel):
     osm_id: Optional[int] = None
     wikidata_id: Optional[str] = None
     marker: MarkerStyle
+    category: Optional[str] = None
+    subcategory: Optional[str] = None
+    object_class: Optional[str] = None
+    description_source: Optional[str] = None
+    effective_description: Optional[str] = None
+    effective_description_source: Optional[str] = None
+    origin: Optional[str] = None

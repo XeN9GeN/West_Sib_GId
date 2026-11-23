@@ -53,6 +53,13 @@ docker compose exec -e DATABASE_URL=postgresql://transsib:transsib@db:5432/trans
 docker compose exec backend python -m scripts.classify_places
 ```
 
+После импорта исследовательских материалов из `archive/` пересчитайте
+эффективные описания:
+
+```powershell
+docker compose exec backend python -m scripts.classify_places --recompute-descriptions
+```
+
 Полный `start_project.ps1` запускает классификатор автоматически после импорта.
 Перед его первым запуском должны быть проверены решения в режиме `--dry-run`
 на копии базы данных и создана резервная копия. Не запускайте команду dry-run
